@@ -42,7 +42,7 @@ internal sealed class MainForm : Form
         layout.RowStyles.Add(new(SizeType.Absolute,84));layout.RowStyles.Add(new(SizeType.Absolute,142));layout.RowStyles.Add(new(SizeType.Absolute,72));layout.RowStyles.Add(new(SizeType.Absolute,48));layout.RowStyles.Add(new(SizeType.Percent,100));layout.RowStyles.Add(new(SizeType.Absolute,64));layout.RowStyles.Add(new(SizeType.Absolute,64));
         var header=new TableLayoutPanel {Dock=DockStyle.Fill,ColumnCount=2,RowCount=2};header.ColumnStyles.Add(new(SizeType.Absolute,155));header.ColumnStyles.Add(new(SizeType.Percent,100));header.RowStyles.Add(new(SizeType.Absolute,42));header.RowStyles.Add(new(SizeType.Percent,100));
         var logo=new Label {Text="Corrector",Font=new Font("Segoe UI",20,FontStyle.Bold),Dock=DockStyle.Fill,ForeColor=Accent};header.Controls.Add(logo,0,0);header.SetRowSpan(logo,2);
-        header.Controls.Add(new Label {Text="Русский корректор",Font=new Font("Segoe UI",16,FontStyle.Bold),Dock=DockStyle.Fill},1,0);
+        header.Controls.Add(new Label {Text="Корректор текста",Font=new Font("Segoe UI",16,FontStyle.Bold),Dock=DockStyle.Fill},1,0);
         header.Controls.Add(new Label {Text="Исправления на твоём компьютере. Текст никуда не отправляется.",Dock=DockStyle.Fill,ForeColor=Muted},1,1);
         layout.Controls.Add(header,0,0);
         var statePanel=new TableLayoutPanel {Dock=DockStyle.Fill,BackColor=Color.White,Padding=new Padding(12),ColumnCount=2};statePanel.ColumnStyles.Add(new(SizeType.Percent,100));statePanel.ColumnStyles.Add(new(SizeType.Absolute,145));
@@ -71,6 +71,16 @@ internal sealed class MainForm : Form
         actions.Controls.AddRange([test,copy,cancel]);layout.Controls.Add(actions,0,5);
         var footer=new FlowLayoutPanel {Dock=DockStyle.Fill};autostart.Text="Запускать при входе в Windows";autostart.AutoSize=true;autostart.CheckedChanged+=(_,_)=>{if(!initializing)SetAutostart();};footer.Controls.Add(autostart);
         badge.Text="Gemma 4 · 12B · UD-Q4_K_XL · до 6000 символов";badge.AutoSize=true;badge.ForeColor=Muted;badge.Margin=new Padding(20,4,0,0);footer.Controls.Add(badge);layout.Controls.Add(footer,0,6);Controls.Add(layout);
+        menu.Items.Add("Настройки…",null,(_,_)=>{
+            var dialog = new SettingsWindow(SettingsStore.Load(), SettingsStore.Autostart);
+            new System.Windows.Interop.WindowInteropHelper(dialog).Owner = Handle;
+            if (dialog.ShowDialog() == true)
+            {
+                initializing = true;
+                try { autostart.Checked = SettingsStore.Autostart; }
+                finally { initializing = false; }
+            }
+        });
         menu.Items.Add("Открыть корректор",null,(_,_)=>Open());menu.Items.Add("Исправить: горячая клавиша",null,(_,_)=>Notify("Выдели текст в нужной программе и нажми "+hotkeyName));menu.Items.Add("Вернуть исходник: Ctrl + Alt + Backspace",null,(_,_)=>Notify("Выдели последнее исправление и нажми Ctrl + Alt + Backspace."));menu.Items.Add(new ToolStripSeparator());menu.Items.Add("Выгрузить модель из памяти",null,(_,_)=>{if(busy){Notify("Сначала дождись завершения или отмени исправление.");return;}engine.Stop();test.Enabled=false;start.Visible=true;Outcome("Модель выгружена","Горячая клавиша снова запустит её.");});menu.Items.Add("Выход",null,(_,_)=>Quit());
         tray=new NotifyIcon {Icon=CorrectorIcon.ForTray(),Visible=true,Text="Corrector — подготовка модели",ContextMenuStrip=menu};tray.DoubleClick+=(_,_)=>Open();
         ticker.Tick+=(_,_)=>{if(checking){stateTitle.Text=$"Проверяю текст · {timer.Elapsed:mm\\:ss}";Text=$"Проверка {timer.Elapsed:mm\\:ss} — Corrector";}};ticker.Start();
@@ -174,16 +184,16 @@ internal sealed class MainForm : Form
         initializing=true;
         try
         {
-            using var key=Registry.CurrentUser.OpenSubKey(@"Software\ABC-Corrector");
+            using var key=Registry.CurrentUser.OpenSubKey(SettingsStore.PreferencesKey);
             hotkey.SelectedIndex=Math.Clamp((int?)key?.GetValue("Hotkey")??0,0,2);preview.Checked=(int?)key?.GetValue("Preview")==1;
-            using var run=Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Run");autostart.Checked=run?.GetValue("ABC-Corrector")!=null;
+            autostart.Checked=SettingsStore.Autostart;
         }
         finally{initializing=false;}
     }
-    void SaveSettings(){if(initializing)return;using var key=Registry.CurrentUser.CreateSubKey(@"Software\ABC-Corrector");key.SetValue("Hotkey",hotkey.SelectedIndex);key.SetValue("Preview",preview.Checked?1:0);}
+    void SaveSettings(){if(initializing)return;using var key=Registry.CurrentUser.CreateSubKey(SettingsStore.PreferencesKey);key.SetValue("Hotkey",hotkey.SelectedIndex);key.SetValue("Preview",preview.Checked?1:0);}
     void SetAutostart()
     {
-        try{using var key=Registry.CurrentUser.CreateSubKey(@"Software\Microsoft\Windows\CurrentVersion\Run");if(autostart.Checked)key.SetValue("ABC-Corrector",$"\"{Environment.ProcessPath}\" --background");else key.DeleteValue("ABC-Corrector",false);}
+        try{SettingsStore.SetAutostart(autostart.Checked);}
         catch(Exception ex){Error(ex);}
     }
     void Quit(){SaveSettings();exiting=true;lifetime.Cancel();operation?.Cancel();ticker.Stop();Native.UnregisterHotKey(Handle,1);Native.UnregisterHotKey(Handle,2);tray.Visible=false;engine.Dispose();tray.Icon?.Dispose();tray.Dispose();menu.Dispose();notification.Dispose();var windowIcon=Icon;Close();windowIcon?.Dispose();}

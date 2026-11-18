@@ -9,17 +9,22 @@ internal sealed class TrayApp : ApplicationContext
     readonly NotifyIcon tray;
     readonly TrayMenu menu = new();
     readonly NotificationCard notification = new();
+    readonly ToolStripMenuItem checkUpdates = new("Проверить обновления");
+    readonly ToolStripMenuItem openRelease = new() { Visible = false };
+    Version? availableVersion;
     readonly DoubleCutHook hook;
     readonly CancellationTokenSource lifetime=new();
     readonly System.Windows.Forms.Timer timer=new(){Interval=1000};
     readonly Stopwatch watch=new();
     readonly ToolStripMenuItem status=new("Загрузка модели…"),cancel=new("Отменить проверку"),copyOriginal=new("Скопировать исходник"),copyResult=new("Скопировать исправленный текст");
     CancellationTokenSource? operation;
+    AppSettings settings = SettingsStore.Load();
     CorrectionMode correctionMode = CorrectionMode.Auto;
     string? original,result;
     bool busy,loading,closing;
     string partStatus="";
     TranslationPopup? popup;
+    SettingsWindow? settingsWindow;
     bool translating;
     public TrayApp()
     {
@@ -27,7 +32,17 @@ internal sealed class TrayApp : ApplicationContext
         tray=new NotifyIcon{Icon=CorrectorIcon.ForTray(),Visible=true,Text="Corrector — загрузка модели"};
         menu.StatusItem=status;status.Enabled=false;cancel.Enabled=false;copyOriginal.Enabled=false;copyResult.Enabled=false;
         menu.Items.Add(status);menu.Items.Add(new ToolStripSeparator());
-        menu.Items.Add("Как пользоваться",null,(_,_)=>Notify("Дважды нажми Ctrl+X для корректуры. Выдели английский текст и нажми ту же комбинацию для перевода на русский во всплывающем окне.")).Tag="\uE897";
+        menu.Items.Add("Настройки…", null, (_, _) => OpenSettings()).Tag="\uE713";
+        checkUpdates.Tag = "\uE72C";
+        checkUpdates.Click += async (_, _) => await CheckUpdates(manual: true);
+        openRelease.Tag = "\uE8A7";
+        openRelease.Click += (_, _) => {
+            try { Process.Start(new ProcessStartInfo($"{ReleaseUpdates.ReleasesUrl}v{availableVersion}") { UseShellExecute = true }); }
+            catch (System.ComponentModel.Win32Exception) { Notify("Не удалось открыть GitHub в браузере.", "Обновления Corrector", NoticeKind.Warning); }
+        };
+        menu.Items.Add(checkUpdates);
+        menu.Items.Add(openRelease);
+        menu.Items.Add("Как пользоваться",null,(_,_)=>Notify($"Дважды нажми Ctrl+X для корректуры. Для перевода выдели {settings.TranslationSource} текст и нажми ту же комбинацию.")).Tag="\uE897";
         var modeMenu = new ToolStripMenuItem("Режим корректуры") { Tag="\uE713" };
         foreach (var (mode, label) in new[] { (CorrectionMode.Auto, "Авто"), (CorrectionMode.Verse, "Стихи"), (CorrectionMode.Prose, "Проза") })
         {
@@ -52,7 +67,48 @@ internal sealed class TrayApp : ApplicationContext
         hook=new DoubleCutHook();hook.Detected+=gesture=>dispatcher.BeginInvoke((Action)(async()=>await CorrectCut(gesture)));
         timer.Tick+=(_,_)=>{if(busy)ShowProgress();};timer.Start();
         dispatcher.BeginInvoke((Action)(async()=>await Prepare()));
+        dispatcher.BeginInvoke((Action)(async()=>await CheckUpdates(manual: false)));
     }
+    async Task CheckUpdates(bool manual)
+    {
+        if (closing || !checkUpdates.Enabled) return;
+        checkUpdates.Enabled = false;
+        checkUpdates.Text = "Проверяю обновления…";
+        try
+        {
+            var latest = await ReleaseUpdates.Latest(lifetime.Token);
+            if (closing) return;
+            availableVersion = latest > ReleaseUpdates.Installed ? latest : null;
+            openRelease.Visible = availableVersion != null;
+            if (availableVersion != null)
+            {
+                openRelease.Text = $"Открыть релиз {latest} на GitHub";
+                Notify("Установщик доступен через меню значка C.", $"Доступен Corrector {latest}", NoticeKind.Success);
+            }
+            else if (manual)
+                Notify($"Установлена актуальная версия {ReleaseUpdates.Installed.ToString(3)}.", "Обновления Corrector", NoticeKind.Success);
+        }
+        catch (Exception ex) when (ex is HttpRequestException or OperationCanceledException or InvalidDataException or System.Text.Json.JsonException)
+        {
+            if (manual && !closing) Notify("Не удалось проверить версию на GitHub. Попробуй позже.", "Обновления Corrector", NoticeKind.Warning);
+        }
+        finally
+        {
+            if (!closing) { checkUpdates.Text = "Проверить обновления"; checkUpdates.Enabled = true; }
+        }
+    }
+    void OpenSettings()
+    {
+        if (settingsWindow != null) { settingsWindow.Activate(); return; }
+        try
+        {
+            settingsWindow = new SettingsWindow(settings, SettingsStore.Autostart);
+            if (settingsWindow.ShowDialog() == true) settings = settingsWindow.Saved;
+        }
+        catch (Exception ex) { Notify(ex.Message, "Настройки Corrector", NoticeKind.Warning); }
+        finally { settingsWindow = null; }
+    }
+
     void Status(string text){status.Text=text;string tip="Corrector — "+text;tray.Text=tip[..Math.Min(63,tip.Length)];}
     void Notify(string text, string title = "Corrector", NoticeKind kind = NoticeKind.Info)
     {
@@ -76,6 +132,7 @@ internal sealed class TrayApp : ApplicationContext
     async Task CorrectCut(CutGesture gesture)
     {
         if(closing)return;
+        var preferences = settings;
         bool occupied=busy||loading,ownsOperation=!occupied;
         if(ownsOperation){busy=true;partStatus="";watch.Restart();}
         try
@@ -108,7 +165,7 @@ internal sealed class TrayApp : ApplicationContext
             DraftField? field=null;
             string text;
             bool explicitSelection;
-            if (visible != null && Correction.ShouldTranslate(visible,true))
+            if (visible != null && preferences.ShouldTranslate(visible,true))
             {
                 text=visible;
                 explicitSelection=true;
@@ -160,8 +217,8 @@ internal sealed class TrayApp : ApplicationContext
                     var target = await SelectedText.Capture(gesture, keepCopy:field!=null);
                     text = target.Text;
                     explicitSelection=field?.ExplicitSelection ?? true;
-                    if (field==null && !Correction.ShouldTranslate(text,true))
-                        throw new InvalidOperationException("Для перевода выдели английский текст.");
+                    if (field==null && !preferences.ShouldTranslate(text,true))
+                        throw new InvalidOperationException($"Для перевода выдели {preferences.TranslationSource} текст.");
                     if (field!=null && !DraftField.SameText(field.Text, text))
                         throw new InvalidOperationException("Редактор выделил другой текст. Проверка остановлена.");
                     sequence=Native.GetClipboardSequenceNumber();
@@ -169,13 +226,13 @@ internal sealed class TrayApp : ApplicationContext
             }
             original=text;result=null;copyOriginal.Enabled=true;copyResult.Enabled=false;
             operation=CancellationTokenSource.CreateLinkedTokenSource(lifetime.Token);cancel.Enabled=true;
-            translating=Correction.ShouldTranslate(text,explicitSelection);
+            translating=preferences.ShouldTranslate(text,explicitSelection);
             cancel.Text=translating ? "Отменить перевод" : "Отменить проверку";
             copyResult.Text=translating ? "Скопировать перевод" : "Скопировать исправленный текст";
             if (translating)
             {
                 popup?.Close();
-                popup=new TranslationPopup();
+                popup=new TranslationPopup(preferences.TranslationTitle);
                 var pending=operation;
                 popup.Closed+=(_,_)=>{popup=null; if (operation==pending) pending.Cancel();};
                 popup.Show();
@@ -190,14 +247,14 @@ internal sealed class TrayApp : ApplicationContext
             }
             if (translating)
             {
-                result=await engine.Translate(text,operation.Token,Progress);
+                result=await engine.Translate(text,operation.Token,Progress,preferences);
                 operation.Token.ThrowIfCancellationRequested();
                 popup?.Display(result,true);
                 copyResult.Enabled=true;
                 Status("Перевод готов");
                 return;
             }
-            result=await engine.CorrectDraft(text,operation.Token,correctionMode,Progress);
+            result=await engine.CorrectDraft(text,operation.Token,correctionMode,Progress,preferences);
             copyResult.Enabled=true;
             if(keyboardField!=null ? await keyboardField.ReplaceVerified(result,operation.Token) :
                 await SelectedText.ReplaceVerified(gesture, field!, text, result, sequence, operation.Token))
@@ -219,6 +276,6 @@ internal sealed class TrayApp : ApplicationContext
     }
     protected override void ExitThreadCore()
     {
-        closing=true;lifetime.Cancel();operation?.Cancel();popup?.Close();hook.Dispose();timer.Stop();timer.Dispose();engine.Dispose();tray.Visible=false;tray.Icon?.Dispose();tray.Dispose();menu.Dispose();notification.Dispose();dispatcher.Dispose();base.ExitThreadCore();
+        closing=true;settingsWindow?.Close();lifetime.Cancel();operation?.Cancel();popup?.Close();hook.Dispose();timer.Stop();timer.Dispose();engine.Dispose();tray.Visible=false;tray.Icon?.Dispose();tray.Dispose();menu.Dispose();notification.Dispose();dispatcher.Dispose();base.ExitThreadCore();
     }
 }

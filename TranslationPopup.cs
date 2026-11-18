@@ -19,9 +19,9 @@ internal sealed class TranslationPopup : W.Window
     [DllImport("user32.dll")]
     static extern bool SetWindowPos(nint hwnd, nint after, int x, int y, int width, int height, uint flags);
 
-    internal TranslationPopup()
+    internal TranslationPopup(string title)
     {
-        Title = "Перевод на русский";
+        Title = title;
         WindowStyle = W.WindowStyle.None;
         ResizeMode = W.ResizeMode.NoResize;
         AllowsTransparency = true;
@@ -38,6 +38,7 @@ internal sealed class TranslationPopup : W.Window
         card = CardTheme.Frame(layout, new W.Thickness(20, 16, 20, 16));
         Content = card;
         CardTheme.Apply(card);
+        ((UI.TextBlock)layout.FindName("Heading")).Text = title;
         body = (UI.TextBox)layout.FindName("Body");
         copy = (UI.Button)layout.FindName("Copy");
         caption = (UI.TextBlock)layout.FindName("CopyCaption");

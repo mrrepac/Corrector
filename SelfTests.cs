@@ -44,11 +44,27 @@ internal static class SelfTests
             Check("empty line at caret", DraftField.BlockStart(stanza + newline) == stanza.Length + newline.Length);
         }
         Check("empty field", DraftField.BlockStart("") == 0);
-        Check("translate single English word",Correction.ShouldTranslate("Hello!",true));
-        Check("translate English lines",Correction.ShouldTranslate("Open Settings.\nChoose an option.",true));
-        Check("keep Russian and mixed selections in correction",!Correction.ShouldTranslate("Мой Windows",true) && !Correction.ShouldTranslate("Ёж",true));
-        Check("ignore selection with no letters",!Correction.ShouldTranslate("2026 — 🙂",true));
-        Check("bare caret keeps draft correction",!Correction.ShouldTranslate("Hello!",false));
+        var defaults = new AppSettings();
+        Check("release versions compared numerically", ReleaseUpdates.ParseTag("v1.10.0") > new Version(1, 9, 9, 0));
+        Check("installed release is current", ReleaseUpdates.ParseTag("v1.2.0") <= new Version(1, 2, 0, 0));
+        try { ReleaseUpdates.ParseTag("v1.3.0-beta.1"); Check("ignore preview versions", false); }
+        catch (InvalidDataException) { Check("ignore preview versions", true); }
+        Check("translate single English word",defaults.ShouldTranslate("Hello!",true));
+        Check("translate English lines",defaults.ShouldTranslate("Open Settings.\nChoose an option.",true));
+        Check("keep Russian and mixed selections in correction",!defaults.ShouldTranslate("Мой Windows",true) && !defaults.ShouldTranslate("Ёж",true));
+        Check("ignore selection with no letters",!defaults.ShouldTranslate("2026 — 🙂",true));
+        Check("bare caret keeps draft correction",!defaults.ShouldTranslate("Hello!",false));
+        var english = defaults with { Language = ProofLanguage.English };
+        Check("reverse translation", english.ShouldTranslate("Привет!", true) &&
+            !english.ShouldTranslate("Hello!", true) && !english.ShouldTranslate("Привет!", false));
+        Check("mixed stays in correction in both directions", !english.ShouldTranslate("Файл README", true));
+        var custom = english.WithPrompt(PromptKind.Verse, "Keep meter").WithPrompt(PromptKind.Translation, "Translate literally");
+        Check("prompts kept per direction", (custom with { Language = ProofLanguage.Russian }).Prompt(PromptKind.Verse) == Correction.VersePrompt);
+        Check("prompt reset is scoped", custom.WithPrompt(PromptKind.Verse, custom.DefaultPrompt(PromptKind.Verse)) is var reset &&
+            reset.English.Verse == null && reset.Prompt(PromptKind.Translation) == "Translate literally");
+        Check("settings round trip", JsonSerializer.Deserialize<AppSettings>(JsonSerializer.Serialize(custom)) == custom);
+        Check("original Russian prose", defaults.Prompt(PromptKind.Prose) == Correction.Prompt);
+        Check("English prose and verse", english.Prompt(PromptKind.Prose).Contains("English") && english.Prompt(PromptKind.Verse).Contains("English"));
         Check("spaces before caret", DraftField.BlockStart("  ") == 2);
         Check("Obsidian caret after emoji", ObsidianSelection.IsBareCaret("Раз🙂","🙂"));
         Check("Obsidian short forward selection", !ObsidianSelection.IsBareCaret("а🙂","а"));
@@ -114,7 +130,7 @@ internal static class SelfTests
             ];
             for(int i=0;i<samples.Length;i++)
             {
-                var watch=Stopwatch.StartNew();string output=await engine.Correct(samples[i],timeout.Token);
+                var watch=Stopwatch.StartNew();string output=await engine.Correct(samples[i],timeout.Token,settings:new AppSettings());
                 results.Add(new {input=samples[i],output,seconds=watch.Elapsed.TotalSeconds,review=Correction.NeedsReview(samples[i],output)});
                 File.WriteAllText(Path.Combine(Paths.State,"model-test.json"),JsonSerializer.Serialize(results,new JsonSerializerOptions {WriteIndented=true,Encoder=System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping}));
             }
