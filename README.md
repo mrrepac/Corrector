@@ -1,4 +1,4 @@
-# Corrector
+# <img src="docs/corrector-icon.png" width="36" height="36" align="middle" alt=""> Corrector
 
 Локальный корректор русского текста для Windows x64. Дважды нажми Ctrl+X, чтобы исправить абзац или выделенный фрагмент. Есть отдельный режим для стихов.
 
