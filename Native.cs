@@ -11,6 +11,13 @@ internal static class Native
     [DllImport("user32.dll",SetLastError=true)] public static extern bool RegisterHotKey(IntPtr hwnd,int id,uint modifiers,uint key);
     [DllImport("user32.dll")] public static extern bool UnregisterHotKey(IntPtr hwnd,int id);
     [DllImport("user32.dll")] public static extern IntPtr GetForegroundWindow();
+    [DllImport("user32.dll",CharSet=CharSet.Unicode)] static extern int GetWindowText(IntPtr window,System.Text.StringBuilder text,int length);
+    public static string WindowTitle(IntPtr window)
+    {
+        var text=new System.Text.StringBuilder(512);
+        GetWindowText(window,text,text.Capacity);
+        return text.ToString();
+    }
     [DllImport("user32.dll")] public static extern uint GetClipboardSequenceNumber();
     [DllImport("user32.dll")] static extern IntPtr GetClipboardOwner();
     [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr window,out uint process);
@@ -39,12 +46,33 @@ internal static class Native
         }
         throw new InvalidOperationException("Отпусти клавиши и попробуй ещё раз.");
     }
-    public static void CtrlKey(ushort key,bool markOwnInput=true)
+    public static void CtrlKey(ushort key,bool markOwnInput=true) => Chord(key,true,false,markOwnInput);
+    public static void Enter() => Chord(0x0D);
+    static Input Key(ushort key,bool up,bool marked=true) => new() {type=1,u=new InputUnion {
+        keyboard=new Keyboard {key=key,flags=(up?2u:0u) | (key is >=0x21 and <=0x28 or 0x2D ? 1u : 0u),extra=marked?InputMarker:UIntPtr.Zero}}};
+    static void Send(List<Input> inputs)
+    {
+        if(SendInput((uint)inputs.Count,inputs.ToArray(),Marshal.SizeOf<Input>())!=inputs.Count)
+            throw new InvalidOperationException("Windows не разрешила ввод в это окно.");
+    }
+    public static void Chord(ushort key,bool ctrl=false,bool shift=false,bool markOwnInput=true)
     {
         if(InputForClipboardTest!=null){InputForClipboardTest(key);return;}
-        Input Key(ushort k,bool up)=>new() {type=1,u=new InputUnion {keyboard=new Keyboard {key=k,flags=up?2u:0u,extra=markOwnInput?InputMarker:UIntPtr.Zero}}};
-        var inputs=new[]{Key(0x11,false),Key(key,false),Key(key,true),Key(0x11,true)};
-        if(SendInput(4,inputs,Marshal.SizeOf<Input>())!=4)throw new InvalidOperationException("Windows не разрешила ввод в это окно. Приложения с правами администратора могут быть недоступны.");
+        var inputs=new List<Input>(6);
+        if(ctrl)inputs.Add(Key(0x11,false,markOwnInput));
+        if(shift)inputs.Add(Key(0x10,false,markOwnInput));
+        inputs.Add(Key(key,false,markOwnInput));inputs.Add(Key(key,true,markOwnInput));
+        if(shift)inputs.Add(Key(0x10,true,markOwnInput));
+        if(ctrl)inputs.Add(Key(0x11,true,markOwnInput));
+        Send(inputs);
+    }
+    public static void Arrows(ushort key,int count,bool shift)
+    {
+        var inputs=new List<Input>(2*count+2);
+        if(shift)inputs.Add(Key(0x10,false));
+        for(int i=0;i<count;i++){inputs.Add(Key(key,false));inputs.Add(Key(key,true));}
+        if(shift)inputs.Add(Key(0x10,true));
+        Send(inputs);
     }
     [DllImport("kernel32.dll",CharSet=CharSet.Unicode)] static extern IntPtr CreateJobObject(IntPtr attributes,string? name);
     [DllImport("kernel32.dll")] static extern bool SetInformationJobObject(IntPtr job,int type,IntPtr info,uint size);
@@ -120,19 +148,6 @@ internal static class SelectedText
         string owner=Guid.NewGuid().ToString("N");
         ClipboardText.Write(text,owner);return owner;
     }
-    public static async Task<Selection> RestoreCut(CutGesture gesture,string text)
-    {
-        if(gesture.Invalidated || Native.GetForegroundWindow()!=gesture.Window || Native.Focus!=gesture.Focus)
-            throw new InvalidOperationException("Ввод или поле изменились. Автовосстановление отменено; исходник остался в буфере.");
-        // Undo the native cut: this restores both rich formatting and the selection.
-        Native.CtrlKey(0x5A);
-        await Task.Delay(80);
-        if(gesture.Invalidated)throw new InvalidOperationException("Ввод изменился после восстановления. Автозамена отменена.");
-        var restored=await Capture();
-        if(restored.Window!=gesture.Window || restored.Focus!=gesture.Focus || restored.Text!=text)
-            throw new InvalidOperationException("Редактор не восстановил выделение после вырезания. Проверка остановлена; исходник доступен в буфере.");
-        return restored;
-    }
     public static async Task<bool> PasteAtCaret(Selection target,string replacement,uint clipboardSequence)
     {
         if(Native.GetForegroundWindow()!=target.Window||Native.Focus!=target.Focus||Native.InputTime!=target.InputTime||Native.GetClipboardSequenceNumber()!=clipboardSequence)return false;
@@ -181,30 +196,33 @@ internal static class SelectedText
             catch(ExternalException ex){throw new IOException("Не удалось вернуть исходник в занятый буфер. Он сохранён в меню C → «Скопировать исходник».",ex);}
         }
     }
-    public static async Task<Selection> CaptureDraft(CutGesture gesture)
+    public static async Task<bool> ReplaceVerified(CutGesture gesture, DraftField field, string original, string replacement,
+        uint sequence, CancellationToken token)
     {
-        // Qt and Chromium can share one native HWND across the composer and the rest of the window.
-        // Ask the focused accessibility element before issuing Select All.
-        bool editable = await Task.Run(() =>
+        bool current() => !token.IsCancellationRequested && gesture.IsCurrent;
+        if (!current() || !await Task.Run(() => field.Matches(field.Prefix, field.Text)) ||
+            !current() || Native.GetClipboardSequenceNumber() != sequence) return false;
+
+        string owner = SetOwnedText(replacement);
+        uint owned = Native.GetClipboardSequenceNumber();
+        try
         {
-            var field = System.Windows.Automation.AutomationElement.FocusedElement;
-            if (field == null) return false;
-            var info = field.Current;
-            if (info.ProcessId != Native.ProcessOf(gesture.Window) || info.IsPassword || !info.IsEnabled) return false;
-            if (info.ControlType != System.Windows.Automation.ControlType.Edit &&
-                info.ControlType != System.Windows.Automation.ControlType.Document) return false;
-            if (field.TryGetCurrentPattern(System.Windows.Automation.ValuePattern.Pattern, out var value))
-                return !((System.Windows.Automation.ValuePattern)value).Current.IsReadOnly;
-            if (field.TryGetCurrentPattern(System.Windows.Automation.TextPattern.Pattern, out var pattern))
-                return ((System.Windows.Automation.TextPattern)pattern).DocumentRange.GetAttributeValue(
-                    System.Windows.Automation.TextPattern.IsReadOnlyAttribute) is false;
+            if (!current()) return false;
+            Native.CtrlKey(0x56);
+            string expected = field.Prefix + replacement;
+            for (int attempt = 0; attempt < 20; attempt++)
+            {
+                await Task.Delay(50, token);
+                if (!current() || !ClipboardText.Owns(owner)) return false;
+                bool pasted = await Task.Run(() => field.Matches(expected, ""));
+                if (!pasted) continue;
+                if (!ClipboardText.Owns(owner) || !current()) return false;
+                if (field.EnterAfterPaste) Native.Enter();
+                return true;
+            }
             return false;
-        });
-        if (!editable) throw new InvalidOperationException("Поставь курсор в редактируемое поле или выдели нужный текст вручную.");
-        if (!gesture.IsCurrent || Native.GetClipboardSequenceNumber()!=gesture.ClipboardBefore)
-            throw new InvalidOperationException("Поле, ввод или буфер изменились. Повтори команду.");
-        Native.CtrlKey(0x41);
-        return await Capture(gesture, keepCopy:true);
+        }
+        finally { await Restore(null, owned, owner, original); }
     }
 
     public static async Task<Selection> Capture(CutGesture? gesture=null,bool keepCopy=false)

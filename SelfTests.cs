@@ -35,6 +35,33 @@ internal static class SelfTests
         var failures=new List<string>();int count=0;
         void Check(string name,bool value){count++;if(!value)failures.Add(name);}
         try{var assets=Assets.ReadLock();Check("published asset manifest",assets.Model.File=="gemma-4-12B-it-qat-UD-Q4_K_XL.gguf" && assets.Model.Size==6716356800 && assets.Runtime.Length==2 && assets.Model.Sha256.Length==64);}catch(Exception){Check("published asset manifest",false);}
+        foreach (string newline in new[] { "\r\n", "\n", "\r", "\u2029" })
+        {
+            string earlier = "Раньше." + newline + " \t" + newline;
+            string stanza = "  Раз" + newline + "Два" + newline + "Три" + newline + "Четыре";
+            Check("stanza after blank line", DraftField.BlockStart(earlier + stanza) == earlier.Length);
+            Check("first stanza in field", DraftField.BlockStart(stanza) == 0);
+            Check("empty line at caret", DraftField.BlockStart(stanza + newline) == stanza.Length + newline.Length);
+        }
+        Check("empty field", DraftField.BlockStart("") == 0);
+        Check("translate single English word",Correction.ShouldTranslate("Hello!",true));
+        Check("translate English lines",Correction.ShouldTranslate("Open Settings.\nChoose an option.",true));
+        Check("keep Russian and mixed selections in correction",!Correction.ShouldTranslate("Мой Windows",true) && !Correction.ShouldTranslate("Ёж",true));
+        Check("ignore selection with no letters",!Correction.ShouldTranslate("2026 — 🙂",true));
+        Check("bare caret keeps draft correction",!Correction.ShouldTranslate("Hello!",false));
+        Check("spaces before caret", DraftField.BlockStart("  ") == 2);
+        Check("Obsidian caret after emoji", ObsidianSelection.IsBareCaret("Раз🙂","🙂"));
+        Check("Obsidian short forward selection", !ObsidianSelection.IsBareCaret("а🙂","а"));
+        Check("Obsidian caret at document start", !ObsidianSelection.IsBareCaret("строка","строка"));
+        Check("Obsidian forward selection", ObsidianSelection.ProvesSelection("слово","слов"));
+        Check("Obsidian backward selection", ObsidianSelection.ProvesSelection("слово","🙂слово"));
+        Check("Obsidian bare caret", !ObsidianSelection.ProvesSelection("строка","а"));
+        Check("Obsidian document edge", !ObsidianSelection.ProvesSelection("строка","строка"));
+        string lines="Раз\nДва";
+        Check("Obsidian entire line selected", ObsidianSelection.Candidates(lines,"Два",
+            new("Дв","Два","Раз\n","аз\n","Два")).SequenceEqual([(4,7)]));
+        Check("Obsidian automatic cut of same line", ObsidianSelection.Candidates(lines,"Два",
+            new("а","Два",lines,lines[1..],"Два")).SequenceEqual([(7,7)]));
         Check("verse CRLF",Correction.UseVerse("От ветра стихает прибой\r\nИ плещет вода за кормой",CorrectionMode.Auto));
         Check("single-line prose",!Correction.UseVerse("Я хочу сказать, что уже пришёл.",CorrectionMode.Auto));
         Check("prose paragraphs",!Correction.UseVerse("Это абзац.\n\nЭто второй.",CorrectionMode.Auto));

@@ -5,7 +5,7 @@ namespace Corrector;
 
 internal sealed record CutGesture(IntPtr Window,IntPtr Focus,uint ClipboardBefore)
 {
-    public bool Invalidated { get; set; }
+    public volatile bool Invalidated;
     public bool IsCurrent => !Invalidated && Window==Native.GetForegroundWindow() && Focus==Native.Focus;
 }
 
@@ -19,6 +19,11 @@ internal sealed class DoubleCutHook : IDisposable
     [DllImport("kernel32.dll",CharSet=CharSet.Unicode)] static extern IntPtr GetModuleHandle(string? name);
     [StructLayout(LayoutKind.Sequential)] struct KeyboardEvent {public uint key,scan,flags,time;public UIntPtr extra;}
     readonly HookProc keyboardCallback,mouseCallback;
+    // Clipboard owners and UI Automation providers can stall the tray thread.
+    // Windows requires low-level hook callbacks to keep pumping messages.
+    readonly Thread worker;
+    readonly TaskCompletionSource<bool> ready = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    Control? dispatcher;
     IntPtr keyboard,mouse;
     bool xDown,suppressUp;
     long firstTime;
@@ -28,9 +33,32 @@ internal sealed class DoubleCutHook : IDisposable
     public DoubleCutHook()
     {
         keyboardCallback=OnKeyboard;mouseCallback=OnMouse;
-        keyboard=SetWindowsHookEx(13,keyboardCallback,GetModuleHandle(null),0);
-        mouse=SetWindowsHookEx(14,mouseCallback,GetModuleHandle(null),0);
-        if(keyboard==IntPtr.Zero||mouse==IntPtr.Zero){Dispose();throw new Win32Exception(Marshal.GetLastWin32Error(),"Не удалось подключить двойной Ctrl+X.");}
+        worker = new Thread(Run) { IsBackground=true, Name="Corrector keyboard hook" };
+        worker.SetApartmentState(ApartmentState.STA);
+        worker.Start();
+        ready.Task.GetAwaiter().GetResult();
+    }
+
+    void Run()
+    {
+        try
+        {
+            using var control = new Control();
+            _ = control.Handle;
+            dispatcher = control;
+            keyboard=SetWindowsHookEx(13,keyboardCallback,GetModuleHandle(null),0);
+            if (keyboard==IntPtr.Zero) throw new Win32Exception(Marshal.GetLastWin32Error());
+            mouse=SetWindowsHookEx(14,mouseCallback,GetModuleHandle(null),0);
+            if (mouse==IntPtr.Zero) throw new Win32Exception(Marshal.GetLastWin32Error());
+            ready.SetResult(true);
+            Application.Run();
+        }
+        catch (Exception ex) when (!ready.Task.IsCompleted) { ready.SetException(ex); }
+        finally
+        {
+            if (keyboard!=IntPtr.Zero) UnhookWindowsHookEx(keyboard);
+            if (mouse!=IntPtr.Zero) UnhookWindowsHookEx(mouse);
+        }
     }
     IntPtr OnMouse(int code,IntPtr message,IntPtr data)
     {
@@ -45,7 +73,7 @@ internal sealed class DoubleCutHook : IDisposable
         if(input.extra==Native.InputMarker)return CallNextHookEx(keyboard,code,message,data);
         bool down=message.ToInt32() is 0x100 or 0x104;
         bool up=message.ToInt32() is 0x101 or 0x105;
-        if(down && input.key is not (0x11 or 0xA2 or 0xA3) && detected!=null)detected.Invalidated=true;
+        if(down && detected!=null)detected.Invalidated=true;
         if(input.key==0x58)
         {
             if(up){xDown=false;if(suppressUp){suppressUp=false;return (IntPtr)1;}}
@@ -70,5 +98,10 @@ internal sealed class DoubleCutHook : IDisposable
         else if(down && input.key is not (0x11 or 0xA2 or 0xA3))first=null;
         return CallNextHookEx(keyboard,code,message,data);
     }
-    public void Dispose(){if(keyboard!=IntPtr.Zero)UnhookWindowsHookEx(keyboard);if(mouse!=IntPtr.Zero)UnhookWindowsHookEx(mouse);keyboard=mouse=IntPtr.Zero;}
+    public void Dispose()
+    {
+        if (!worker.IsAlive) return;
+        dispatcher!.BeginInvoke((Action)Application.ExitThread);
+        worker.Join();
+    }
 }

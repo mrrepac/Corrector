@@ -7,6 +7,9 @@ internal enum CorrectionMode { Auto, Prose, Verse }
 internal static class Correction
 {
     public const int MaxChars=6000;
+    internal static bool ShouldTranslate(string text, bool explicitlySelected) =>
+        explicitlySelected && Regex.IsMatch(text, "[A-Za-z]") &&
+        !Regex.IsMatch(text, @"\p{IsCyrillic}");
     public static string? KeepDraftLayout(string source,string corrected)
     {
         const string breaks=@"(?:\r\n|[\r\n])(?:[^\S\r\n]*(?:\r\n|[\r\n]))*";

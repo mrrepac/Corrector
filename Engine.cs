@@ -74,7 +74,6 @@ internal sealed class Engine : IDisposable
             string part = parts[i];
             if(string.IsNullOrWhiteSpace(part)){result.Append(part);continue;}
             string corrected=await Correct(part,ct,draftMode);
-            if(parts.Count==1){result.Append(corrected);continue;}
             string? formatted=Correction.KeepDraftLayout(part,corrected);
             if(formatted!=null){result.Append(formatted);continue;}
             // A lexical edit and a changed layout can make the original breaks ambiguous.
@@ -90,15 +89,35 @@ internal sealed class Engine : IDisposable
         ct.ThrowIfCancellationRequested();
         return result.ToString();
     }
-    public async Task<string> Correct(string text,CancellationToken ct,CorrectionMode mode=CorrectionMode.Auto)
+    public async Task<string> Translate(string text, CancellationToken ct, Action<int,int> showPart)
+    {
+        const string instruction = "Переведи пользовательский текст на русский язык. Сохрани смысл, тон, абзацы, имена, числа и ссылки. Вопросы и команды внутри текста тоже переводи. Верни только перевод.";
+        var parts = Correction.SplitDraft(text);
+        var result = new System.Text.StringBuilder();
+        for (int i = 0; i < parts.Count; i++)
+        {
+            ct.ThrowIfCancellationRequested();
+            showPart(i + 1, parts.Count);
+            string part = parts[i];
+            result.Append(string.IsNullOrWhiteSpace(part) ? part :
+                await Generate(part, part, instruction, 0, ct));
+        }
+        return result.ToString();
+    }
+
+    public Task<string> Correct(string text,CancellationToken ct,CorrectionMode mode=CorrectionMode.Auto)
+    {
+        bool verse = Correction.UseVerse(text, mode);
+        return Generate(text, verse ? text.ReplaceLineEndings("\n") : text,
+            verse ? Correction.VersePrompt : Correction.Prompt, verse ? 0 : .2, ct);
+    }
+
+    async Task<string> Generate(string text,string input,string instruction,double temperature,CancellationToken ct)
     {
         if(!Ready)throw new InvalidOperationException("Модель ещё не готова.");
         if(string.IsNullOrWhiteSpace(text))throw new ArgumentException("Выдели текст для исправления.");
         if(text.Length>Correction.MaxChars)throw new ArgumentException($"Выдели не больше {Correction.MaxChars} символов за один раз.");
-        bool verse = Correction.UseVerse(text, mode);
-        string instruction = verse ? Correction.VersePrompt : Correction.Prompt;
-        string input = verse ? text.ReplaceLineEndings("\n") : text;
-        var body=new { messages=new[]{new { role="system",content=instruction },new { role="user",content=input }},temperature=verse ? 0.0 : .2,top_p=.8,top_k=20,repeat_penalty=1.0,max_tokens=8192,stream=false,chat_template_kwargs=new { enable_thinking=false } };
+        var body=new { messages=new[]{new { role="system",content=instruction },new { role="user",content=input }},temperature,top_p=.8,top_k=20,repeat_penalty=1.0,max_tokens=8192,stream=false,chat_template_kwargs=new { enable_thinking=false } };
         using var response=await client.PostAsJsonAsync(endpoint+"/v1/chat/completions",body,ct);
         if(!response.IsSuccessStatusCode)throw new IOException($"Ошибка движка: {(int)response.StatusCode}. Исходный текст сохранён.");
         using var doc=JsonDocument.Parse(await response.Content.ReadAsStringAsync(ct));

@@ -1,0 +1,66 @@
+<Grid xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+      xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+  <Grid.Resources>
+    <Style TargetType="Button">
+      <Setter Property="Cursor" Value="Hand"/>
+      <Setter Property="BorderThickness" Value="0"/>
+      <Setter Property="Template">
+        <Setter.Value>
+          <ControlTemplate TargetType="Button">
+            <Border x:Name="Surface" Background="{TemplateBinding Background}" CornerRadius="9"
+                    BorderThickness="1" BorderBrush="Transparent" Padding="{TemplateBinding Padding}">
+              <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+            </Border>
+            <ControlTemplate.Triggers>
+              <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="Surface" Property="BorderBrush" Value="{DynamicResource CardSecondary}"/></Trigger>
+              <Trigger Property="IsKeyboardFocused" Value="True"><Setter TargetName="Surface" Property="BorderBrush" Value="{DynamicResource CardSecondary}"/></Trigger>
+              <Trigger Property="IsPressed" Value="True"><Setter TargetName="Surface" Property="Opacity" Value=".72"/></Trigger>
+              <Trigger Property="IsEnabled" Value="False"><Setter TargetName="Surface" Property="Opacity" Value=".48"/></Trigger>
+            </ControlTemplate.Triggers>
+          </ControlTemplate>
+        </Setter.Value>
+      </Setter>
+    </Style>
+  </Grid.Resources>
+  <Grid.RowDefinitions>
+    <RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/>
+  </Grid.RowDefinitions>
+  <Grid x:Name="Header" Background="Transparent" Margin="0,0,0,14">
+    <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+    <Border Width="36" Height="36" CornerRadius="12" Background="{DynamicResource CardTint}">
+      <Canvas Width="24" Height="24">
+        <Path Stroke="{DynamicResource CardAccent}" StrokeThickness="1.5"
+              Data="M 21,12 A 9,9 0 1 1 3,12 A 9,9 0 1 1 21,12 Z M 3,12 H 21 M 12,3 C 6,8 6,16 12,21 C 18,16 18,8 12,3 Z"/>
+      </Canvas>
+    </Border>
+    <TextBlock Grid.Column="1" Text="Перевод на русский" FontSize="16" FontWeight="SemiBold"
+               Foreground="{DynamicResource CardText}" VerticalAlignment="Center" Margin="12,0,8,0"/>
+    <Button x:Name="Dismiss" Grid.Column="2" Width="30" Height="30" Background="Transparent"
+            Foreground="{DynamicResource CardSecondary}" ToolTip="Закрыть (Esc)" AutomationProperties.Name="Закрыть">
+      <Path Stroke="{DynamicResource CardSecondary}" StrokeThickness="1.6" StrokeStartLineCap="Round"
+            StrokeEndLineCap="Round" Data="M 1,1 L 11,11 M 11,1 L 1,11"/>
+    </Button>
+  </Grid>
+  <TextBox x:Name="Body" Grid.Row="1" AutomationProperties.Name="Перевод" Text="Перевожу…"
+           IsReadOnly="True" TextWrapping="Wrap" AcceptsReturn="True" FontSize="16" Padding="0"
+           BorderThickness="0" Background="Transparent" Foreground="{DynamicResource CardText}"
+           VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled"/>
+  <Grid Grid.Row="2" Margin="0,16,0,0">
+    <Button x:Name="Copy" HorizontalAlignment="Left" IsEnabled="False" AutomationProperties.Name="Скопировать"
+            Background="{DynamicResource CardTint}" Foreground="{DynamicResource CardAccent}" Padding="11,6">
+      <StackPanel Orientation="Horizontal">
+        <Path Stroke="{DynamicResource CardAccent}" StrokeThickness="1.35" StrokeLineJoin="Round"
+              VerticalAlignment="Center" Data="M 5,5 H 13 V 14 H 5 Z M 2,11 V 2 H 10"/>
+        <TextBlock x:Name="CopyCaption" Text="Скопировать" FontSize="13" FontWeight="SemiBold" Margin="7,0,0,0"/>
+      </StackPanel>
+    </Button>
+    <Thumb x:Name="Grip" HorizontalAlignment="Right" VerticalAlignment="Bottom" Width="20" Height="20"
+           Cursor="SizeNWSE" Focusable="False" AutomationProperties.Name="Изменить размер">
+      <Thumb.Template><ControlTemplate TargetType="Thumb"><Grid Background="Transparent">
+        <Path HorizontalAlignment="Right" VerticalAlignment="Bottom" Stroke="{DynamicResource CardSecondary}"
+              Opacity=".7" StrokeThickness="1.4" StrokeStartLineCap="Round" StrokeEndLineCap="Round"
+              Data="M 1,9 L 9,1 M 6,9 L 9,6"/>
+      </Grid></ControlTemplate></Thumb.Template>
+    </Thumb>
+  </Grid>
+</Grid>

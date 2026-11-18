@@ -9,6 +9,8 @@ internal sealed class MainForm : Form
     readonly CancellationTokenSource lifetime=new();
     CancellationTokenSource? operation;
     readonly NotifyIcon tray;
+    readonly TrayMenu menu = new();
+    readonly NotificationCard notification;
     readonly Label status=new();
     readonly Label stateTitle=new();
     readonly ProgressBar activity=new();
@@ -31,10 +33,11 @@ internal sealed class MainForm : Form
     public MainForm(bool background)
     {
         this.background=background;
+        notification=new NotificationCard(Open);
         AutoScaleMode=AutoScaleMode.Dpi;AutoScaleDimensions=new SizeF(96,96);
         Text="Corrector — русский корректор";ClientSize=new Size(960,740);MinimumSize=new Size(900,700);
         StartPosition=FormStartPosition.CenterScreen;Font=new Font("Segoe UI",10);BackColor=Color.FromArgb(246,248,247);ForeColor=Ink;
-        Icon=MakeIcon();
+        Icon=CorrectorIcon.Load(SystemInformation.IconSize);
         var layout=new TableLayoutPanel {Dock=DockStyle.Fill,Padding=new Padding(28),ColumnCount=1,RowCount=7};
         layout.RowStyles.Add(new(SizeType.Absolute,84));layout.RowStyles.Add(new(SizeType.Absolute,142));layout.RowStyles.Add(new(SizeType.Absolute,72));layout.RowStyles.Add(new(SizeType.Absolute,48));layout.RowStyles.Add(new(SizeType.Percent,100));layout.RowStyles.Add(new(SizeType.Absolute,64));layout.RowStyles.Add(new(SizeType.Absolute,64));
         var header=new TableLayoutPanel {Dock=DockStyle.Fill,ColumnCount=2,RowCount=2};header.ColumnStyles.Add(new(SizeType.Absolute,155));header.ColumnStyles.Add(new(SizeType.Percent,100));header.RowStyles.Add(new(SizeType.Absolute,42));header.RowStyles.Add(new(SizeType.Percent,100));
@@ -68,19 +71,13 @@ internal sealed class MainForm : Form
         actions.Controls.AddRange([test,copy,cancel]);layout.Controls.Add(actions,0,5);
         var footer=new FlowLayoutPanel {Dock=DockStyle.Fill};autostart.Text="Запускать при входе в Windows";autostart.AutoSize=true;autostart.CheckedChanged+=(_,_)=>{if(!initializing)SetAutostart();};footer.Controls.Add(autostart);
         badge.Text="Gemma 4 · 12B · UD-Q4_K_XL · до 6000 символов";badge.AutoSize=true;badge.ForeColor=Muted;badge.Margin=new Padding(20,4,0,0);footer.Controls.Add(badge);layout.Controls.Add(footer,0,6);Controls.Add(layout);
-        var menu=new ContextMenuStrip();menu.Items.Add("Открыть корректор",null,(_,_)=>Open());menu.Items.Add("Исправить: горячая клавиша",null,(_,_)=>Notify("Выдели текст в нужной программе и нажми "+hotkeyName));menu.Items.Add("Вернуть исходник: Ctrl + Alt + Backspace",null,(_,_)=>Notify("Выдели последнее исправление и нажми Ctrl + Alt + Backspace."));menu.Items.Add(new ToolStripSeparator());menu.Items.Add("Выгрузить модель из памяти",null,(_,_)=>{if(busy){Notify("Сначала дождись завершения или отмени исправление.");return;}engine.Stop();test.Enabled=false;start.Visible=true;Outcome("Модель выгружена","Горячая клавиша снова запустит её.");});menu.Items.Add("Выход",null,(_,_)=>Quit());
-        tray=new NotifyIcon {Icon=Icon,Visible=true,Text="Corrector — подготовка модели",ContextMenuStrip=menu};tray.DoubleClick+=(_,_)=>Open();tray.BalloonTipClicked+=(_,_)=>Open();
+        menu.Items.Add("Открыть корректор",null,(_,_)=>Open());menu.Items.Add("Исправить: горячая клавиша",null,(_,_)=>Notify("Выдели текст в нужной программе и нажми "+hotkeyName));menu.Items.Add("Вернуть исходник: Ctrl + Alt + Backspace",null,(_,_)=>Notify("Выдели последнее исправление и нажми Ctrl + Alt + Backspace."));menu.Items.Add(new ToolStripSeparator());menu.Items.Add("Выгрузить модель из памяти",null,(_,_)=>{if(busy){Notify("Сначала дождись завершения или отмени исправление.");return;}engine.Stop();test.Enabled=false;start.Visible=true;Outcome("Модель выгружена","Горячая клавиша снова запустит её.");});menu.Items.Add("Выход",null,(_,_)=>Quit());
+        tray=new NotifyIcon {Icon=CorrectorIcon.ForTray(),Visible=true,Text="Corrector — подготовка модели",ContextMenuStrip=menu};tray.DoubleClick+=(_,_)=>Open();
         ticker.Tick+=(_,_)=>{if(checking){stateTitle.Text=$"Проверяю текст · {timer.Elapsed:mm\\:ss}";Text=$"Проверка {timer.Elapsed:mm\\:ss} — Corrector";}};ticker.Start();
         LoadSettings();preview.CheckedChanged+=(_,_)=>SaveSettings();
         Shown+=async(_,_)=>{if(background)Hide();RegisterKeys();await InitializeModel();};
         FormClosing+=(_,e)=>{if(!exiting){e.Cancel=true;Hide();Notify("Corrector работает в фоне. Исправить: "+hotkeyName);}};
     }
-    static Icon MakeIcon()
-    {
-        using var bitmap=new Bitmap(64,64);using var g=Graphics.FromImage(bitmap);g.Clear(Accent);using var font=new Font("Segoe UI",24,FontStyle.Bold);g.DrawString("C",font,Brushes.White,12,10);
-        var handle=bitmap.GetHicon();var icon=(Icon)Icon.FromHandle(handle).Clone();DestroyIcon(handle);return icon;
-    }
-    [System.Runtime.InteropServices.DllImport("user32.dll")]static extern bool DestroyIcon(IntPtr h);
     void RegisterKeys()
     {
         Native.UnregisterHotKey(Handle,1);Native.UnregisterHotKey(Handle,2);
@@ -98,7 +95,7 @@ internal sealed class MainForm : Form
     void SetStatus(string text){status.Text=text;tray.Text="Corrector — "+(checking?"проверяю текст":initializing?"загружаю модель":engine.Ready?"готово":"модель не загружена");}
     void Outcome(string title,string detail,bool error=false){checking=false;stateTitle.Text=title;stateTitle.ForeColor=error?Color.Firebrick:Accent;SetStatus(detail);}
     void ShowActivity(string title){stateTitle.Text=title;stateTitle.ForeColor=Accent;activity.Visible=true;activity.MarqueeAnimationSpeed=30;test.Text="Проверяю…";original.ReadOnly=true;}
-    void Notify(string text){tray.ShowBalloonTip(3500,"Corrector",text,ToolTipIcon.Info);}
+    void Notify(string text){if(!exiting)notification.Present("Corrector",text);}
     void Error(Exception ex){Outcome("Не удалось выполнить проверку",ex.Message,true);Notify(ex.Message);}
     void Open(){Show();WindowState=FormWindowState.Normal;Activate();}
     async Task InitializeModel()
@@ -189,5 +186,5 @@ internal sealed class MainForm : Form
         try{using var key=Registry.CurrentUser.CreateSubKey(@"Software\Microsoft\Windows\CurrentVersion\Run");if(autostart.Checked)key.SetValue("ABC-Corrector",$"\"{Environment.ProcessPath}\" --background");else key.DeleteValue("ABC-Corrector",false);}
         catch(Exception ex){Error(ex);}
     }
-    void Quit(){SaveSettings();exiting=true;lifetime.Cancel();operation?.Cancel();ticker.Stop();Native.UnregisterHotKey(Handle,1);Native.UnregisterHotKey(Handle,2);tray.Visible=false;engine.Dispose();tray.Dispose();Close();}
+    void Quit(){SaveSettings();exiting=true;lifetime.Cancel();operation?.Cancel();ticker.Stop();Native.UnregisterHotKey(Handle,1);Native.UnregisterHotKey(Handle,2);tray.Visible=false;engine.Dispose();tray.Icon?.Dispose();tray.Dispose();menu.Dispose();notification.Dispose();var windowIcon=Icon;Close();windowIcon?.Dispose();}
 }
