@@ -10,8 +10,7 @@ internal sealed class TrayApp : ApplicationContext
     readonly TrayMenu menu = new();
     readonly NotificationCard notification = new();
     readonly ToolStripMenuItem checkUpdates = new("Проверить обновления");
-    readonly ToolStripMenuItem openRelease = new() { Visible = false };
-    Version? availableVersion;
+    readonly System.Windows.Forms.Timer updateTimer = new() { Interval = (int)TimeSpan.FromHours(4).TotalMilliseconds };
     readonly DoubleCutHook hook;
     readonly CancellationTokenSource lifetime=new();
     readonly System.Windows.Forms.Timer timer=new(){Interval=1000};
@@ -26,7 +25,7 @@ internal sealed class TrayApp : ApplicationContext
     TranslationPopup? popup;
     SettingsWindow? settingsWindow;
     bool translating;
-    public TrayApp()
+    public TrayApp(bool updateFailed)
     {
         _=dispatcher.Handle;
         tray=new NotifyIcon{Icon=CorrectorIcon.ForTray(),Visible=true,Text="Corrector — загрузка модели"};
@@ -35,13 +34,9 @@ internal sealed class TrayApp : ApplicationContext
         menu.Items.Add("Настройки…", null, (_, _) => OpenSettings()).Tag="\uE713";
         checkUpdates.Tag = "\uE72C";
         checkUpdates.Click += async (_, _) => await CheckUpdates(manual: true);
-        openRelease.Tag = "\uE8A7";
-        openRelease.Click += (_, _) => {
-            try { Process.Start(new ProcessStartInfo($"{ReleaseUpdates.ReleasesUrl}v{availableVersion}") { UseShellExecute = true }); }
-            catch (System.ComponentModel.Win32Exception) { Notify("Не удалось открыть GitHub в браузере.", "Обновления Corrector", NoticeKind.Warning); }
-        };
         menu.Items.Add(checkUpdates);
-        menu.Items.Add(openRelease);
+        updateTimer.Tick += async (_, _) => await CheckUpdates(manual: false);
+        updateTimer.Start();
         menu.Items.Add("Как пользоваться",null,(_,_)=>Notify($"Дважды нажми Ctrl+X для корректуры. Для вычисления допиши = после примера. Для перевода выдели {settings.TranslationSource} текст и нажми ту же комбинацию.")).Tag="\uE897";
         var modeMenu = new ToolStripMenuItem("Режим корректуры") { Tag="\uE713" };
         foreach (var (mode, label) in new[] { (CorrectionMode.Auto, "Авто"), (CorrectionMode.Verse, "Стихи"), (CorrectionMode.Prose, "Проза") })
@@ -67,7 +62,10 @@ internal sealed class TrayApp : ApplicationContext
         hook=new DoubleCutHook();hook.Detected+=gesture=>dispatcher.BeginInvoke((Action)(async()=>await CorrectCut(gesture)));
         timer.Tick+=(_,_)=>{if(busy)ShowProgress();};timer.Start();
         dispatcher.BeginInvoke((Action)(async()=>await Prepare()));
-        dispatcher.BeginInvoke((Action)(async()=>await CheckUpdates(manual: false)));
+        if (updateFailed)
+            dispatcher.BeginInvoke((Action)(() => Notify("Предыдущая версия восстановлена. Повторить установку можно через меню в трее.", "Обновление не установлено", NoticeKind.Warning)));
+        else
+            dispatcher.BeginInvoke((Action)(async()=>await CheckUpdates(manual: false)));
     }
     async Task CheckUpdates(bool manual)
     {
@@ -76,21 +74,27 @@ internal sealed class TrayApp : ApplicationContext
         checkUpdates.Text = "Проверяю обновления…";
         try
         {
-            var latest = await ReleaseUpdates.Latest(lifetime.Token);
+            var update = await ReleaseUpdates.Latest(lifetime.Token);
             if (closing) return;
-            availableVersion = latest > ReleaseUpdates.Installed ? latest : null;
-            openRelease.Visible = availableVersion != null;
-            if (availableVersion != null)
+            if (update == null)
             {
-                openRelease.Text = $"Открыть релиз {latest} на GitHub";
-                Notify("Установщик доступен через меню значка C.", $"Доступен Corrector {latest}", NoticeKind.Success);
+                if (manual) Notify($"Установлена актуальная версия {ReleaseUpdates.Installed.ToString(3)}.", "Обновления Corrector", NoticeKind.Success);
+                return;
             }
-            else if (manual)
-                Notify($"Установлена актуальная версия {ReleaseUpdates.Installed.ToString(3)}.", "Обновления Corrector", NoticeKind.Success);
+            checkUpdates.Text = $"Скачивается Corrector {update.Version}…";
+            string installer = await ReleaseUpdates.Download(update, lifetime.Token);
+            checkUpdates.Text = $"Готово обновление {update.Version}";
+            while (busy || loading || settingsWindow != null || popup != null || menu.Visible)
+                await Task.Delay(500, lifetime.Token);
+            lifetime.Token.ThrowIfCancellationRequested();
+            ReleaseUpdates.StartInstaller(installer);
+            ExitThread();
         }
-        catch (Exception ex) when (ex is HttpRequestException or OperationCanceledException or InvalidDataException or System.Text.Json.JsonException)
+        catch (OperationCanceledException) when (closing) { }
+        catch (Exception ex)
         {
-            if (manual && !closing) Notify("Не удалось проверить версию на GitHub. Попробуй позже.", "Обновления Corrector", NoticeKind.Warning);
+            if (!closing && (manual || ex is not (HttpRequestException or OperationCanceledException)))
+                Notify(ex.Message, "Не удалось обновить Corrector", NoticeKind.Warning);
         }
         finally
         {
@@ -298,6 +302,7 @@ internal sealed class TrayApp : ApplicationContext
     }
     protected override void ExitThreadCore()
     {
+        updateTimer.Dispose();
         closing=true;settingsWindow?.Close();lifetime.Cancel();operation?.Cancel();popup?.Close();hook.Dispose();timer.Stop();timer.Dispose();engine.Dispose();tray.Visible=false;tray.Icon?.Dispose();tray.Dispose();menu.Dispose();notification.Dispose();dispatcher.Dispose();base.ExitThreadCore();
     }
 }

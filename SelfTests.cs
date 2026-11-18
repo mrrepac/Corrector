@@ -61,7 +61,12 @@ internal static class SelfTests
         }
         var defaults = new AppSettings();
         Check("release versions compared numerically", ReleaseUpdates.ParseTag("v1.10.0") > new Version(1, 9, 9, 0));
-        Check("installed release is current", ReleaseUpdates.ParseTag("v1.3.0") == new Version(ReleaseUpdates.Installed.ToString(3)));
+        var asset = new ReleaseUpdates.Asset("Corrector-Setup-1.4.0-win-x64.exe", 100, "sha256:" + new string('a', 64));
+        Check("choose installer for newer release", ReleaseUpdates.Select("v1.4.0", [asset], new Version(1,3,0))?.Installer == asset);
+        Check("do not reinstall current release", ReleaseUpdates.Select("v" + ReleaseUpdates.Installed.ToString(3), [], ReleaseUpdates.Installed) == null);
+        Check("do not downgrade", ReleaseUpdates.Select("v1.3.0", [], ReleaseUpdates.Installed) == null);
+        try { ReleaseUpdates.Select("v1.4.0", [asset with { Digest = null }], new Version(1,3,0)); Check("require installer digest", false); }
+        catch (InvalidDataException) { Check("require installer digest", true); }
         try { ReleaseUpdates.ParseTag("v1.3.0-beta.1"); Check("ignore preview versions", false); }
         catch (InvalidDataException) { Check("ignore preview versions", true); }
         Check("translate single English word",defaults.ShouldTranslate("Hello!",true));

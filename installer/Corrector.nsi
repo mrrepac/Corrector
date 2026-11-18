@@ -37,6 +37,8 @@ Var Work
 Var PreviousDir
 Var Lock
 Var RestoreFailed
+Var UpdatePid
+Var PortableUpdate
 
 !macro LockSetup
   System::Call 'kernel32::CreateMutexW(p 0, i 0, w "Local\mrrepac.Corrector.Setup") p.r0 ?e'
@@ -97,14 +99,26 @@ Section "Corrector" App
   SetOutPath "$Work\new"
   File /r "${PayloadDir}\*.*"
   IfErrors extractFailure
-  WriteUninstaller "$Work\new\Uninstall-Corrector.exe"
-  IfErrors extractFailure
+  ${If} $PortableUpdate != 1
+    WriteUninstaller "$Work\new\Uninstall-Corrector.exe"
+    IfErrors extractFailure
+  ${EndIf}
   SetOutPath "$INSTDIR"
   CreateDirectory "$INSTDIR\licenses"
   IfErrors extractFailure
   !insertmacro Payload ReplaceFile
+  ${If} $PortableUpdate != 1
+    !insertmacro ReplaceFile "Uninstall-Corrector.exe"
+  ${EndIf}
   RMDir /r "$Work"
 
+  ${If} $UpdatePid != ""
+    ${If} $PortableUpdate != 1
+      WriteRegStr HKCU "${RegKey}" "DisplayVersion" "${Version}"
+      WriteRegStr HKCU "${RegKey}" "DisplayName" "Corrector"
+    ${EndIf}
+    Goto done
+  ${EndIf}
   WriteRegStr HKCU "${RegKey}" "DisplayName" "Corrector"
   WriteRegStr HKCU "${RegKey}" "DisplayVersion" "${Version}"
   WriteRegStr HKCU "${RegKey}" "Publisher" "mrrepac"
@@ -120,6 +134,9 @@ Section "Corrector" App
 rollback:
   StrCpy $RestoreFailed 0
   !insertmacro Payload RestoreFile
+  ${If} $PortableUpdate != 1
+    !insertmacro RestoreFile "Uninstall-Corrector.exe"
+  ${EndIf}
   ${If} $RestoreFailed == 1
     MessageBox MB_ICONSTOP "Не удалось восстановить файлы. Резервная копия сохранена в $Work\old." /SD IDOK
     Abort
@@ -141,6 +158,9 @@ Section "Ярлык на рабочем столе" Desktop
 SectionEnd
 
 Section -Finish
+  ${If} $UpdatePid != ""
+    Return
+  ${EndIf}
   ${If} ${SectionIsSelected} ${Desktop}
     WriteRegDWORD HKCU "${RegKey}" "DesktopShortcut" 1
   ${Else}
@@ -162,16 +182,53 @@ Function .onInit
     MessageBox MB_ICONSTOP "Для Corrector требуется 64-разрядная Windows." /SD IDOK
     Abort
   ${EndIf}
-  !insertmacro LockSetup
   SetRegView 64
   SetShellVarContext current
   ReadRegStr $PreviousDir HKCU "${RegKey}" "InstallLocation"
+  ${GetParameters} $0
+  ${GetOptions} $0 "/UPDATEPID=" $UpdatePid
+  ${If} $UpdatePid != ""
+    ${IfNot} ${FileExists} "$INSTDIR\Corrector.exe"
+    ${OrIfNot} ${FileExists} "$INSTDIR\assets.lock.json"
+      Abort
+    ${EndIf}
+    ; Windows releases the executable and the model engine when the parent exits.
+    System::Call 'kernel32::OpenProcess(i 0x100000, i 0, i $UpdatePid) p.r0'
+    ${If} $0 != 0
+      System::Call 'kernel32::WaitForSingleObject(p r0, i 60000) i.r1'
+      System::Call 'kernel32::CloseHandle(p r0)'
+      ${If} $1 != 0
+        Abort
+      ${EndIf}
+    ${EndIf}
+    ${If} $PreviousDir != $INSTDIR
+      StrCpy $PortableUpdate 1
+    ${EndIf}
+    !insertmacro UnselectSection ${Desktop}
+  ${EndIf}
+  !insertmacro LockSetup
+  ${If} $UpdatePid != ""
+    Return
+  ${EndIf}
   ${If} $PreviousDir != ""
     StrCpy $INSTDIR "$PreviousDir"
     ReadRegDWORD $0 HKCU "${RegKey}" "DesktopShortcut"
     ${If} $0 == 0
       !insertmacro UnselectSection ${Desktop}
     ${EndIf}
+  ${EndIf}
+FunctionEnd
+
+Function .onInstSuccess
+  ${If} $UpdatePid != ""
+    Exec '"$INSTDIR\Corrector.exe" --background'
+  ${EndIf}
+FunctionEnd
+
+Function .onInstFailed
+  ${If} $UpdatePid != ""
+  ${AndIf} $RestoreFailed != 1
+    Exec '"$INSTDIR\Corrector.exe" --update-failed'
   ${EndIf}
 FunctionEnd
 
@@ -191,6 +248,7 @@ Function CheckDirectory
   ${EndIf}
   ${If} $PreviousDir != ""
   ${AndIf} $INSTDIR != $PreviousDir
+  ${AndIf} $PortableUpdate != 1
     Push "Для обновления выберите прежнюю папку: $PreviousDir"
     Return
   ${EndIf}
@@ -200,6 +258,7 @@ Function CheckDirectory
     ; a directory if none of the files we would install are already present.
     ${If} ${FileExists} "$INSTDIR\assets\*.*"
       !insertmacro Payload CheckCollision
+      !insertmacro CheckCollision "Uninstall-Corrector.exe"
       Push ""
       Return
     ${EndIf}
@@ -250,6 +309,7 @@ Section "Uninstall"
   ; are removed: downloaded models, settings and unrelated files are retained.
   !insertmacro DeleteInstalled "Corrector.exe"
   !insertmacro Payload DeleteInstalled
+  !insertmacro DeleteInstalled "Uninstall-Corrector.exe"
   Delete "$SMPROGRAMS\Corrector.lnk"
   ReadRegDWORD $0 HKCU "${RegKey}" "DesktopShortcut"
   ${If} $0 == 1

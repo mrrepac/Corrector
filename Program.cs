@@ -16,7 +16,7 @@ internal static class Program
         if (!first) return;
         Application.ThreadException += (_, e) => MessageBox.Show(e.Exception.Message, "Corrector — ошибка");
         if(args.Contains("--editor"))Application.Run(new MainForm(false));
-        else Application.Run(new TrayApp());
+        else Application.Run(new TrayApp(args.Contains("--update-failed")));
     }
 }
 

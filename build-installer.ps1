@@ -44,7 +44,7 @@ try {
         }
         $manifest += ('  !insertmacro ${Action} "' + $name + '"')
     }
-    $manifest += '  !insertmacro ${Action} "Uninstall-Corrector.exe"', '!macroend'
+    $manifest += '!macroend'
     $list = Join-Path $work 'payload.nsh'
     [IO.File]::WriteAllLines($list, [string[]]$manifest)
     New-Item -ItemType Directory -Path $dist -Force | Out-Null
