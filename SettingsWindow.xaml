@@ -51,7 +51,8 @@
   </StackPanel>
   <ScrollViewer VerticalScrollBarVisibility="Auto">
     <StackPanel>
-      <CheckBox x:Name="Startup" Content="Запускать Corrector при входе в Windows" Margin="0,6,0,20" Foreground="{DynamicResource CardText}"/>
+      <CheckBox x:Name="Startup" Content="Запускать Corrector при входе в Windows" Margin="0,6,0,8" Foreground="{DynamicResource CardText}"/>
+      <CheckBox x:Name="Preload" Content="Загружать модель при запуске и держать в памяти" Margin="0,0,0,20" Foreground="{DynamicResource CardText}"/>
       <TextBlock Text="Корректура и перевод" Style="{StaticResource Heading}" Margin="0,0,0,8"/>
       <UniformGrid Columns="2">
         <RadioButton x:Name="Russian" GroupName="Language" Margin="0,0,4,0" HorizontalContentAlignment="Left" AutomationProperties.Name="Корректура русского">

@@ -21,7 +21,9 @@ internal static class Assets
         var manifest = ReadLock();
         var runtime = Path.Combine(Paths.Assets, "runtime");
         var marker = Path.Combine(runtime, "verified-b12499.txt");
-        if (!File.Exists(marker))
+        string[] required = ["llama-server.exe", "llama-server-impl.dll", "llama.dll", "ggml.dll", "ggml-base.dll",
+            "ggml-cuda.dll", "cublas64_12.dll", "cublasLt64_12.dll", "cudart64_12.dll"];
+        if (!File.Exists(marker) || required.Any(name => !File.Exists(Path.Combine(runtime, name))))
         {
             Directory.CreateDirectory(runtime);
             foreach(var asset in manifest.Runtime)
@@ -33,6 +35,34 @@ internal static class Assets
             File.WriteAllText(marker,"b12499");
         }
         return await Download(manifest.Model, Path.Combine(Paths.Assets,"models"), progress, ct);
+    }
+    // Called only after the extracted engine successfully loads the model.
+    internal static void RemoveRuntimeArchives()
+    {
+        string directory = Path.Combine(Paths.Assets, "downloads");
+        if (!Directory.Exists(directory)) return;
+        foreach (var asset in ReadLock().Runtime)
+        {
+            var path = Path.Combine(directory, Path.GetFileName(asset.File));
+            try { File.Delete(path); File.Delete(path + ".verified"); }
+            catch (IOException) { } // Another instance may be preparing its runtime.
+            catch (UnauthorizedAccessException) { }
+        }
+    }
+
+    internal static async Task CopyBounded(Stream input, Stream output, long remaining, CancellationToken token, Action<long>? report = null)
+    {
+        byte[] buffer = new byte[128 * 1024];
+        long total = 0;
+        int read;
+        while ((read = await input.ReadAsync(buffer, token).ConfigureAwait(false)) != 0)
+        {
+            if (read > remaining - total) throw new InvalidDataException("Сервер прислал больше данных, чем ожидалось.");
+            await output.WriteAsync(buffer.AsMemory(0, read), token).ConfigureAwait(false);
+            total += read;
+            report?.Invoke(total);
+        }
+        if (total != remaining) throw new EndOfStreamException("Загрузка прервалась до конца файла.");
     }
     static async Task<string> Download(Asset asset, string folder, IProgress<string> progress, CancellationToken ct)
     {
@@ -67,18 +97,21 @@ internal static class Assets
                     response.EnsureSuccessStatusCode();
                     if(response.StatusCode!=HttpStatusCode.PartialContent)offset=0;
                     else if(response.Content.Headers.ContentRange?.From!=offset)throw new IOException("Некорректный ответ при продолжении загрузки.");
-                    await using var input=await response.Content.ReadAsStreamAsync(ct);
+                    long remaining = asset.Size - offset;
+                    if (response.Content.Headers.ContentLength is long size && size > remaining)
+                        throw new InvalidDataException("Размер ответа превышает ожидаемый.");
+                    await using var input=await response.Content.ReadAsStreamAsync(timeout.Token);
                     await using(var output=new FileStream(part,offset>0?FileMode.Append:FileMode.Create,FileAccess.Write,FileShare.Read,1024*1024,true))
                     {
-                        byte[] buffer=new byte[1024*1024]; int n; var last=DateTime.MinValue;
-                        while((n=await input.ReadAsync(buffer,ct))>0)
+                        var last=DateTime.MinValue;
+                        await CopyBounded(input, output, remaining, timeout.Token, received =>
                         {
-                            await output.WriteAsync(buffer.AsMemory(0,n),ct);offset+=n;
                             if((DateTime.UtcNow-last).TotalMilliseconds>500)
                             {
-                                progress.Report($"Загрузка {asset.File}\n{offset/1e9:F2} / {asset.Size/1e9:F2} ГБ · {100.0*offset/asset.Size:F0}%");last=DateTime.UtcNow;
+                                long written = offset + received;
+                                progress.Report($"Загрузка {asset.File}\n{written/1e9:F2} / {asset.Size/1e9:F2} ГБ · {100.0*written/asset.Size:F0}%");last=DateTime.UtcNow;
                             }
-                        }
+                        });
                     }
                 }
                 await Verify(part,asset,progress,ct);
@@ -86,6 +119,7 @@ internal static class Assets
                 File.WriteAllText(marker,$"{asset.Sha256}:{File.GetLastWriteTimeUtc(file).Ticks}");
                 return file;
             }
+            catch(OperationCanceledException) when (!ct.IsCancellationRequested) { throw new TimeoutException("Истекло время загрузки. Повтори загрузку, чтобы продолжить."); }
             catch(OperationCanceledException) { throw; }
             catch(Exception ex) when(attempt<3)
             {

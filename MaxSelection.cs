@@ -15,40 +15,42 @@ internal sealed class MaxSelection(CutGesture gesture, uint sequence) : Keyboard
             return;
         }
 
-        Key(Home, ctrl:true, shift:true);
-        string prefix = await TryCopy() ?? "";
-        if (cut == null)
+        if (cut != null)
         {
-            int start = DraftField.BlockStart(prefix);
-            Text = prefix[start..];
-            if (string.IsNullOrWhiteSpace(Text)) throw new InvalidOperationException("Перед курсором пустая строка.");
-            // Qt does not expose this caret to UIA. The prefix alone cannot
-            // distinguish end of line from a caret just before more message text.
-            Key(0x41, ctrl:true);
-            string document = await Copy();
-            if (!document.StartsWith(prefix, StringComparison.Ordinal))
-                throw new InvalidOperationException("Текст в MAX изменился.");
-            string suffix = document[prefix.Length..];
-            EnterAfterPaste = DraftField.AtLineEnd(suffix);
-            if (start == 0 && suffix.Length == 0) return; // Select All is the target.
-            Key(End, ctrl:true);
-            await MoveCharacters(suffix, true, false);
-            if (start == 0) Key(Home, ctrl:true, shift:true);
-            else await MoveCharacters(Text, true, true);
-        }
-        else
-        {
-            if (prefix.Length != 0) Key(Right);
-            Key(End, ctrl:true, shift:true);
-            string suffix = await TryCopy() ?? "";
-            if (suffix.Length != 0) Key(Left);
-            bool before = prefix.EndsWith(cut, StringComparison.Ordinal);
-            bool after = suffix.StartsWith(cut, StringComparison.Ordinal);
-            if (before == after) throw new InvalidOperationException("Не удалось определить границы вырезанного текста в MAX.");
-            Text = cut;
+            // Qt can collapse the selection on Undo. Compare only the adjacent
+            // range with the known cut, and require exactly one matching side.
+            async Task<string?> Neighbor(bool backwards)
+            {
+                Key(backwards ? Left : Right, shift:true);
+                var candidate = await TryCopy();
+                if (!string.IsNullOrEmpty(candidate)) Key(backwards ? Right : Left);
+                return candidate;
+            }
+            string? left = await Neighbor(true), right = await Neighbor(false);
+            bool before = !string.IsNullOrEmpty(left) && cut.EndsWith(left, StringComparison.Ordinal);
+            bool after = !string.IsNullOrEmpty(right) && cut.StartsWith(right, StringComparison.Ordinal);
+            if (before == after) throw new InvalidOperationException("Выдели фрагмент в MAX и повтори.");
             await MoveCharacters(cut, before, true);
+            if (await Copy() != cut) throw new InvalidOperationException("Выделение в MAX изменилось.");
+            Text = cut;
+            return;
         }
-        if (await Copy() != Text) throw new InvalidOperationException("MAX выделил другой фрагмент.");
+
+        Key(Right, shift:true);
+        string? next = await TryCopy();
+        if (!string.IsNullOrEmpty(next))
+        {
+            Key(Left);
+            EnterAfterPaste = DraftField.AtLineEnd(next.AsSpan());
+        }
+        Key(Left, shift:true);
+        var previous = await TryCopy();
+        if (string.IsNullOrEmpty(previous) || System.Globalization.StringInfo.GetNextTextElementLength(previous) != previous.Length)
+            throw new InvalidOperationException("Не удалось подтвердить курсор. Выдели текст в MAX и повтори.");
+        // When Shift+Right at EOF cannot move, Shift+Left selects one grapheme.
+        // Inside a line the same two keys collapse the range, even if Copy timed out.
+        if (string.IsNullOrEmpty(next)) EnterAfterPaste = true;
+        await SelectBlockBackwards(previous);
     }
 
     internal override async Task<bool> ReplaceVerified(string replacement, CancellationToken token)

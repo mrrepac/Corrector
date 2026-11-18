@@ -1,6 +1,7 @@
 ﻿param(
     [string]$PortableZip,
-    [string]$Compiler
+    [string]$Compiler,
+    [string]$SigningThumbprint
 )
 $ErrorActionPreference = 'Stop'
 $root = $PSScriptRoot
@@ -30,10 +31,16 @@ try {
         Add-Type -AssemblyName System.IO.Compression.FileSystem
         [IO.Compression.ZipFile]::ExtractToDirectory((Resolve-Path -LiteralPath $PortableZip).Path, $payload)
     } else {
-        & (Join-Path $root 'build.ps1') -OutputDirectory $payload
+        & (Join-Path $root 'build.ps1') -OutputDirectory $payload -SigningThumbprint $SigningThumbprint
     }
 
     $exe = Get-Item -LiteralPath (Join-Path $payload 'Corrector.exe')
+    if ($SigningThumbprint) {
+        $signature = Get-AuthenticodeSignature -LiteralPath $exe.FullName
+        if ($signature.Status -ne 'Valid' -or $signature.SignerCertificate.Thumbprint -ne $SigningThumbprint) {
+            throw 'Application signature does not match the installer signing certificate.'
+        }
+    }
     if ($exe.VersionInfo.ProductVersion.Split('+')[0] -ne $version) { throw 'Версия EXE не совпадает с проектом.' }
     if (!(Test-Path -LiteralPath (Join-Path $payload 'assets.lock.json'))) { throw 'Отсутствует assets.lock.json.' }
     $manifest = @('!macro Payload Action')
@@ -51,6 +58,7 @@ try {
     $built = Join-Path $work 'Corrector-Setup.exe'
     & $Compiler /V2 "/DVersion=$version" "/DPayloadDir=$payload" "/DFileList=$list" "/DSetupExe=$built" (Join-Path $root 'installer\Corrector.nsi')
     if ($LASTEXITCODE -ne 0) { throw "Ошибка NSIS: $LASTEXITCODE" }
+    if ($SigningThumbprint) { & "$root/sign-release.ps1" -File $built -Thumbprint $SigningThumbprint }
     Copy-Item -LiteralPath $built -Destination $output -Force
     Write-Output $output
 } finally {

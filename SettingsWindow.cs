@@ -36,6 +36,8 @@ internal sealed class SettingsWindow : W.Window
         editor = Item<UI.TextBox>("Prompt");
         startup = Item<UI.CheckBox>("Startup");
         startup.IsChecked = autostart;
+        var preload = Item<UI.CheckBox>("Preload");
+        preload.IsChecked = draft.PreloadModel;
         foreach (var language in Enum.GetValues<ProofLanguage>())
         {
             var option = Item<UI.RadioButton>(language.ToString());
@@ -55,6 +57,7 @@ internal sealed class SettingsWindow : W.Window
         Item<UI.Button>("Reset").Click += (_, _) => { editor.Text = draft.DefaultPrompt(kind); editor.ScrollToHome(); };
         Item<UI.Button>("Save").Click += (_, _) => {
             RememberEditor();
+            draft = draft with { PreloadModel = preload.IsChecked == true };
             try { SettingsStore.Save(draft, startup.IsChecked == true); DialogResult = true; }
             catch (Exception ex) { W.MessageBox.Show(this, ex.Message, "Не удалось сохранить настройки"); }
         };

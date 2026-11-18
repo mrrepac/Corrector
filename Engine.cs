@@ -49,7 +49,7 @@ internal sealed class Engine : IDisposable
                     {
                         ct.ThrowIfCancellationRequested();
                         if(process.HasExited)throw new IOException("Движок завершился при загрузке.");
-                        try { using var response=await health.GetAsync(address+"/health",ct);if(response.IsSuccessStatusCode){lock(logGate)loading=false;endpoint=address;client.DefaultRequestHeaders.Authorization=new("Bearer",secret);progress.Report(layers>0?"Модель готова · GPU":"Модель готова · CPU");return;} }
+                        try { using var response=await health.GetAsync(address+"/health",ct);if(response.IsSuccessStatusCode){lock(logGate)loading=false;Assets.RemoveRuntimeArchives();endpoint=address;client.DefaultRequestHeaders.Authorization=new("Bearer",secret);progress.Report(layers>0?"Модель готова · GPU":"Модель готова · CPU");return;} }
                         catch(HttpRequestException) {} catch(TaskCanceledException) when(!ct.IsCancellationRequested) {}
                         await Task.Delay(1000,ct);
                     }
@@ -62,10 +62,11 @@ internal sealed class Engine : IDisposable
         }
         finally { gate.Release(); }
     }
-    public async Task<string> CorrectDraft(string text,CancellationToken ct,CorrectionMode mode,Action<int,int> showPart,AppSettings settings)
+    public async Task<(string Text, bool NeedsReview)> CorrectDraft(string text,CancellationToken ct,CorrectionMode mode,Action<int,int> showPart,AppSettings settings)
     {
         var parts = Correction.SplitDraft(text);
         var result = new System.Text.StringBuilder(text.Length);
+        bool review = false;
         var draftMode = Correction.UseVerse(text, mode) ? CorrectionMode.Verse : CorrectionMode.Prose;
         for (int i=0; i<parts.Count; i++)
         {
@@ -75,7 +76,12 @@ internal sealed class Engine : IDisposable
             if(string.IsNullOrWhiteSpace(part)){result.Append(part);continue;}
             string corrected=await Correct(part,ct,draftMode,settings);
             string? formatted=Correction.KeepDraftLayout(part,corrected);
-            if(formatted!=null){result.Append(formatted);continue;}
+            if(formatted!=null)
+            {
+                review |= Correction.NeedsReview(part, formatted);
+                result.Append(formatted);
+                continue;
+            }
             // A lexical edit and a changed layout can make the original breaks ambiguous.
             // In that case correct each original line separately and copy its separators verbatim.
             foreach(string line in System.Text.RegularExpressions.Regex.Split(part,@"(\r\n|\r|\n)"))
@@ -83,11 +89,13 @@ internal sealed class Engine : IDisposable
                 ct.ThrowIfCancellationRequested();
                 if(string.IsNullOrWhiteSpace(line)){result.Append(line);continue;}
                 string singleLine=line==part ? corrected : await Correct(line,ct,draftMode,settings);
-                result.Append(System.Text.RegularExpressions.Regex.Replace(singleLine,@"\s*[\r\n]+\s*"," "));
+                string replacement = System.Text.RegularExpressions.Regex.Replace(singleLine,@"\s*[\r\n]+\s*"," ");
+                review |= Correction.NeedsReview(line, replacement);
+                result.Append(replacement);
             }
         }
         ct.ThrowIfCancellationRequested();
-        return result.ToString();
+        return (result.ToString(), review);
     }
     public async Task<string> Translate(string text, CancellationToken ct, Action<int,int> showPart, AppSettings settings)
     {

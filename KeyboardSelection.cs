@@ -52,6 +52,42 @@ internal abstract class KeyboardSelection(CutGesture gesture, uint sequence)
     protected virtual async Task<string> Copy() => await TryCopy() ??
         throw new InvalidOperationException("Редактор не подтвердил копирование.");
 
+    // The anchor stays at the original caret. Extend by one visual line
+    // and one grapheme at a time, stopping as soon as a blank line is known.
+    protected async Task SelectBlockBackwards(string selected)
+    {
+        if (string.IsNullOrEmpty(selected) || selected == "\n")
+            throw new InvalidOperationException("Перед курсором пустая строка.");
+        for (int probe = 0; probe < 256; probe++)
+        {
+            Key(Home, shift:true);
+            string line = await Copy();
+            if (!line.EndsWith(selected, StringComparison.Ordinal))
+                throw new InvalidOperationException("Редактор изменил выделение. Выдели фрагмент вручную.");
+            Key(Left, shift:true);
+            string extended = await Copy();
+            if (!extended.EndsWith(line, StringComparison.Ordinal))
+                throw new InvalidOperationException("Редактор изменил текст.");
+            bool atStart = extended == line;
+            // Exclude the leading partial line when looking for a separator.
+            int firstBreak = extended.IndexOf('\n');
+            if (atStart || (firstBreak >= 0 && DraftField.BlockStart(extended[(firstBreak + 1)..]) > 0))
+            {
+                Text = extended[DraftField.BlockStart(extended)..];
+                if (string.IsNullOrWhiteSpace(Text)) throw new InvalidOperationException("Перед курсором пустая строка.");
+                if (Text.Length != extended.Length)
+                {
+                    Key(Right);
+                    await MoveCharacters(Text, true, true);
+                    if (await Copy() != Text) throw new InvalidOperationException("Редактор выделил другой фрагмент.");
+                }
+                return;
+            }
+            selected = extended;
+        }
+        throw new InvalidOperationException("Для такого длинного абзаца выдели текст вручную.");
+    }
+
     protected async Task MoveCharacters(string text, bool backwards, bool shift)
     {
         int count = new StringInfo(text).LengthInTextElements;

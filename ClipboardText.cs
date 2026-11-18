@@ -16,6 +16,7 @@ internal static class ClipboardText
     [DllImport("kernel32.dll")] static extern IntPtr GlobalLock(IntPtr handle);
     [DllImport("kernel32.dll")] static extern bool GlobalUnlock(IntPtr handle);
     [DllImport("kernel32.dll")] static extern IntPtr GlobalFree(IntPtr handle);
+    [DllImport("kernel32.dll")] static extern nuint GlobalSize(IntPtr handle);
     [ThreadStatic] static Control? window;
     static uint OwnerFormat=>RegisterClipboardFormat("ABC.PasteOwner.Unicode.v1");
     static void Open()
@@ -32,7 +33,20 @@ internal static class ClipboardText
     {
         IntPtr memory=GetClipboardData(format);if(memory==IntPtr.Zero)return null;
         IntPtr pointer=GlobalLock(memory);if(pointer==IntPtr.Zero)throw new ExternalException("Не удалось прочитать буфер.");
-        try{return Marshal.PtrToStringUni(pointer);}finally{GlobalUnlock(memory);}
+        try
+        {
+            // GlobalSize includes allocator padding. Only materialize characters before NUL.
+            return ReadBounded(pointer, GlobalSize(memory), format == 13 ? 4 * 1024 * 1024 : 32);
+        }
+        finally { GlobalUnlock(memory); }
+    }
+    internal static string ReadBounded(IntPtr pointer, nuint bytes, int maxChars)
+    {
+        int chars = (int)Math.Min(bytes / 2, (nuint)(maxChars + 1));
+        for (int i = 0; i < chars; i++)
+            if (Marshal.ReadInt16(pointer, i * 2) == 0)
+                return Marshal.PtrToStringUni(pointer, i)!;
+        throw new InvalidDataException("Повреждённый или слишком длинный текст в буфере.");
     }
     static IntPtr Allocate(string text)
     {
@@ -43,9 +57,10 @@ internal static class ClipboardText
     }
     static void WriteLocked(string text,string? owner)
     {
-        IntPtr memory=Allocate(text),token=owner==null?IntPtr.Zero:Allocate(owner);
+        IntPtr memory=Allocate(text),token=IntPtr.Zero;
         try
         {
+            if(owner!=null)token=Allocate(owner);
             if(!EmptyClipboard())throw new ExternalException("Не удалось обновить буфер.");
             if(SetClipboardData(13,memory)==IntPtr.Zero)throw new ExternalException("Не удалось записать исходник в буфер.");memory=IntPtr.Zero;
             if(token!=IntPtr.Zero){if(SetClipboardData(OwnerFormat,token)==IntPtr.Zero)throw new ExternalException("Не удалось пометить вставку.");token=IntPtr.Zero;}

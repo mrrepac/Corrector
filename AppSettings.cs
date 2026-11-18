@@ -22,6 +22,7 @@ internal sealed record PromptOverrides(string? Prose = null, string? Verse = nul
 
 internal sealed record AppSettings
 {
+    public bool PreloadModel { get; init; }
     public ProofLanguage Language { get; init; } = ProofLanguage.Russian;
     public PromptOverrides Russian { get; init; } = new();
     public PromptOverrides English { get; init; } = new();

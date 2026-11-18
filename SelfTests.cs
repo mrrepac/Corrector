@@ -34,6 +34,27 @@ internal static class SelfTests
     {
         var failures=new List<string>();int count=0;
         void Check(string name,bool value){count++;if(!value)failures.Add(name);}
+        var buffer = System.Runtime.InteropServices.Marshal.StringToHGlobalUni("тест");
+        try
+        {
+            Check("bounded UTF16", ClipboardText.ReadBounded(buffer, 10, 4) == "тест");
+            foreach (var (size, limit) in new[] { (8, 4), (9, 4), (10, 3), (0, 4) })
+            {
+                try { ClipboardText.ReadBounded(buffer, (nuint)size, limit); Check("reject invalid clipboard", false); }
+                catch (InvalidDataException) { Check("reject invalid clipboard", true); }
+            }
+        }
+        finally { System.Runtime.InteropServices.Marshal.FreeHGlobal(buffer); }
+        foreach (int bytes in new[] { 1, 2, 3 })
+        {
+            using var input = new MemoryStream(new byte[bytes]);
+            using var output = new MemoryStream();
+            try { Assets.CopyBounded(input, output, 2, default).GetAwaiter().GetResult(); Check("exact download", bytes == 2 && output.Length == 2); }
+            catch (InvalidDataException) { Check("oversized download", bytes > 2 && output.Length <= 2); }
+            catch (EndOfStreamException) { Check("short download", bytes < 2); }
+        }
+        Check("lazy model by default", !new AppSettings().PreloadModel);
+        Check("legacy settings use lazy model", !JsonSerializer.Deserialize<AppSettings>("{}")!.PreloadModel);
         try{var assets=Assets.ReadLock();Check("published asset manifest",assets.Model.File=="gemma-4-12B-it-qat-UD-Q4_K_XL.gguf" && assets.Model.Size==6716356800 && assets.Runtime.Length==2 && assets.Model.Sha256.Length==64);}catch(Exception){Check("published asset manifest",false);}
         foreach (string newline in new[] { "\r\n", "\n", "\r", "\u2029" })
         {
@@ -88,16 +109,12 @@ internal static class SelfTests
         Check("spaces before caret", DraftField.BlockStart("  ") == 2);
         Check("Obsidian caret after emoji", ObsidianSelection.IsBareCaret("Раз🙂","🙂"));
         Check("Obsidian short forward selection", !ObsidianSelection.IsBareCaret("а🙂","а"));
+        Check("Obsidian short calculator at caret", ObsidianSelection.IsBareCaret("2=", "="));
         Check("Obsidian caret at document start", !ObsidianSelection.IsBareCaret("строка","строка"));
         Check("Obsidian forward selection", ObsidianSelection.ProvesSelection("слово","слов"));
         Check("Obsidian backward selection", ObsidianSelection.ProvesSelection("слово","🙂слово"));
         Check("Obsidian bare caret", !ObsidianSelection.ProvesSelection("строка","а"));
         Check("Obsidian document edge", !ObsidianSelection.ProvesSelection("строка","строка"));
-        string lines="Раз\nДва";
-        Check("Obsidian entire line selected", ObsidianSelection.Candidates(lines,"Два",
-            new("Дв","Два","Раз\n","аз\n","Два")).SequenceEqual([(4,7)]));
-        Check("Obsidian automatic cut of same line", ObsidianSelection.Candidates(lines,"Два",
-            new("а","Два",lines,lines[1..],"Два")).SequenceEqual([(7,7)]));
         Check("verse CRLF",Correction.UseVerse("От ветра стихает прибой\r\nИ плещет вода за кормой",CorrectionMode.Auto));
         Check("single-line prose",!Correction.UseVerse("Я хочу сказать, что уже пришёл.",CorrectionMode.Auto));
         Check("prose paragraphs",!Correction.UseVerse("Это абзац.\n\nЭто второй.",CorrectionMode.Auto));
@@ -122,6 +139,8 @@ internal static class SelfTests
         Check("punctuation safe",!Correction.NeedsReview("Если будет дождь мы останемся дома","Если будет дождь, мы останемся дома."));
         Check("line loss reviewed",Correction.NeedsReview("Привет\nмир","Привет, мир"));
         Check("number changes reviewed",Correction.NeedsReview("Нужно 27 штук","Нужно 28 штук"));
+        Check("changed sign reviewed", Correction.NeedsReview("Баланс -27 ₽", "Баланс 27 ₽"));
+        Check("changed percentage reviewed", Correction.NeedsReview("Скидка 27%", "Скидка 27"));
         Check("URL changes reviewed",Correction.NeedsReview("сайт https://a.ru","сайт https://b.ru"));
         Check("rewrites reviewed",Correction.NeedsReview("Ты сказал что мы будем гулять сегодня вечером", "Предлагаю организовать прогулку завтра после обеда."));
         Check("deletions reviewed",Correction.NeedsReview("Один два три четыре пять шесть семь восемь девять десять", "Один два"));

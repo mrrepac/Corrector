@@ -90,12 +90,15 @@ internal static class Correction
     }
     public static bool NeedsReview(string source,string result)
     {
+        if (source == result) return false;
         if(source.Count(c=>c=='\n')!=result.Count(c=>c=='\n'))return true;
         if(result.Length>source.Length*1.4+20 || result.Length<source.Length*.7)return true;
-        if(!Regex.Matches(source,@"\d+").Select(x=>x.Value).SequenceEqual(Regex.Matches(result,@"\d+").Select(x=>x.Value)))return true;
+        const string number = @"[+−-]?\d+(?:[.,]\d+)*(?:[ \u00a0\u202f]?[%‰₽€$])?";
+        if(!Regex.Matches(source,number).Select(x=>x.Value).SequenceEqual(Regex.Matches(result,number).Select(x=>x.Value)))return true;
         if(!Regex.Matches(source,@"https?://\S+").Select(x=>x.Value).SequenceEqual(Regex.Matches(result,@"https?://\S+").Select(x=>x.Value)))return true;
         string[] a=Regex.Matches(source.ToLowerInvariant(),@"[\p{L}\p{N}]+").Select(x=>x.Value).ToArray();
         string[] b=Regex.Matches(result.ToLowerInvariant(),@"[\p{L}\p{N}]+").Select(x=>x.Value).ToArray();
+        if (a.SequenceEqual(b)) return false;
         // Word edit distance catches rewrites while allowing punctuation-only changes.
         int[] row=Enumerable.Range(0,b.Length+1).ToArray();
         for(int i=1;i<=a.Length;i++) { int prev=row[0];row[0]=i;for(int j=1;j<=b.Length;j++){int old=row[j];row[j]=Math.Min(Math.Min(row[j]+1,row[j-1]+1),prev+(a[i-1]==b[j-1]?0:1));prev=old;} }

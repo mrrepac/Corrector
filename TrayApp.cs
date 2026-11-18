@@ -15,6 +15,7 @@ internal sealed class TrayApp : ApplicationContext
     readonly CancellationTokenSource lifetime=new();
     readonly System.Windows.Forms.Timer timer=new(){Interval=1000};
     readonly Stopwatch watch=new();
+    readonly Stopwatch idle = Stopwatch.StartNew();
     readonly ToolStripMenuItem status=new("Загрузка модели…"),cancel=new("Отменить проверку"),copyOriginal=new("Скопировать исходник"),copyResult=new("Скопировать исправленный текст");
     CancellationTokenSource? operation;
     AppSettings settings = SettingsStore.Load();
@@ -60,8 +61,16 @@ internal sealed class TrayApp : ApplicationContext
         menu.Items.Add(new ToolStripSeparator());menu.Items.Add("Выход",null,(_,_)=>ExitThread()).Tag="\uE7E8";tray.ContextMenuStrip=menu;
         tray.DoubleClick+=(_,_)=>Notify(status.Text??"Corrector работает в фоне");
         hook=new DoubleCutHook();hook.Detected+=gesture=>dispatcher.BeginInvoke((Action)(async()=>await CorrectCut(gesture)));
-        timer.Tick+=(_,_)=>{if(busy)ShowProgress();};timer.Start();
-        dispatcher.BeginInvoke((Action)(async()=>await Prepare()));
+        timer.Tick+=(_,_)=>{
+            if(busy)ShowProgress();
+            else if (!loading && !settings.PreloadModel && engine.Ready && idle.Elapsed >= TimeSpan.FromMinutes(10))
+            {
+                engine.Stop();
+                Status("Модель выгружена после простоя");
+            }
+        };timer.Start();
+        if (settings.PreloadModel) dispatcher.BeginInvoke((Action)(async()=>await Prepare()));
+        else Status("Готово · загрузка модели по запросу");
         if (updateFailed)
             dispatcher.BeginInvoke((Action)(() => Notify("Предыдущая версия восстановлена. Повторить установку можно через меню в трее.", "Обновление не установлено", NoticeKind.Warning)));
         else
@@ -87,7 +96,8 @@ internal sealed class TrayApp : ApplicationContext
             while (busy || loading || settingsWindow != null || popup != null || menu.Visible)
                 await Task.Delay(500, lifetime.Token);
             lifetime.Token.ThrowIfCancellationRequested();
-            ReleaseUpdates.StartInstaller(installer);
+            await ReleaseUpdates.StartInstaller(installer, update,
+                () => !busy && !loading && settingsWindow == null && popup == null && !menu.Visible, lifetime.Token);
             ExitThread();
         }
         catch (OperationCanceledException) when (closing) { }
@@ -107,7 +117,12 @@ internal sealed class TrayApp : ApplicationContext
         try
         {
             settingsWindow = new SettingsWindow(settings, SettingsStore.Autostart);
-            if (settingsWindow.ShowDialog() == true) settings = settingsWindow.Saved;
+            if (settingsWindow.ShowDialog() == true)
+            {
+                settings = settingsWindow.Saved;
+                idle.Restart();
+                if (settings.PreloadModel && !engine.Ready) _ = Prepare();
+            }
         }
         catch (Exception ex) { Notify(ex.Message, "Настройки Corrector", NoticeKind.Warning); }
         finally { settingsWindow = null; }
@@ -125,7 +140,7 @@ internal sealed class TrayApp : ApplicationContext
         if(busy||loading||closing)return;loading=true;Status("Загрузка модели…");
         try{await engine.Start(new Progress<string>(s=>{if(loading&&!closing)Status(s.Replace('\n',' '));}),lifetime.Token);Status("Готово · Ctrl+X дважды");Notify("Дважды нажми Ctrl+X для проверки текста.", "Corrector готов", NoticeKind.Success);}
         catch(OperationCanceledException){}catch(Exception ex){Status("Не удалось загрузить модель");Notify(ex.Message, "Ошибка Corrector", NoticeKind.Warning);}
-        finally{loading=false;}
+        finally{loading=false;idle.Restart();}
     }
     static bool IsMax(IntPtr window)
     {
@@ -174,7 +189,7 @@ internal sealed class TrayApp : ApplicationContext
                 text=visible;
                 explicitSelection=true;
             }
-            else if (cut!=null && ObsidianSelection.IsObsidian(gesture.Window) && Clipboard.GetData(DataFormats.Html) is string html && html.Contains("<!-- obsidian -->",StringComparison.Ordinal))
+            else if (cut!=null && ObsidianSelection.IsObsidian(gesture.Window) && Clipboard.TryGetData<string>(DataFormats.Html, out var html) && html != null && html.Contains("<!-- obsidian -->",StringComparison.Ordinal))
             {
                 var obsidian=new ObsidianSelection(gesture,sequence);
                 try { await obsidian.Prepare(cut); }
@@ -280,8 +295,20 @@ internal sealed class TrayApp : ApplicationContext
                 Status("Перевод готов");
                 return;
             }
-            result=await engine.CorrectDraft(text,operation.Token,correctionMode,Progress,preferences);
+            var draft=await engine.CorrectDraft(text,operation.Token,correctionMode,Progress,preferences);
+            result=draft.Text;
             copyResult.Enabled=true;
+            operation.Token.ThrowIfCancellationRequested();
+            if (draft.NeedsReview)
+            {
+                Status("Нужен просмотр исправления");
+                popup?.Close();
+                popup = new TranslationPopup("Проверь исправление перед вставкой");
+                popup.Closed += (_, _) => popup = null;
+                popup.Show();
+                popup.Display(result, true);
+                return;
+            }
             if(keyboardField!=null ? await keyboardField.ReplaceVerified(result,operation.Token) :
                 await SelectedText.ReplaceVerified(gesture, field!, text, result, sequence, operation.Token))
             {
@@ -298,7 +325,7 @@ internal sealed class TrayApp : ApplicationContext
         }
         catch(OperationCanceledException){if(ownsOperation){if(!translating)engine.Stop();Status(translating?"Перевод отменён":"Проверка отменена");if(translating)popup?.Close();} }
         catch(Exception ex){if(ownsOperation){Status(translating?"Перевод не выполнен":"Проверка не выполнена");if(translating)popup?.Display(ex.Message);}Notify(ex.Message, "Ошибка Corrector", NoticeKind.Warning);}
-        finally{if(ownsOperation){busy=false;translating=false;watch.Stop();cancel.Enabled=false;operation?.Dispose();operation=null;}}
+        finally{if(ownsOperation){idle.Restart();busy=false;translating=false;watch.Stop();cancel.Enabled=false;operation?.Dispose();operation=null;}}
     }
     protected override void ExitThreadCore()
     {

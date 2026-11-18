@@ -27,7 +27,7 @@ internal static class ReleaseUpdates
         if (version <= installed) return null;
         var installer = assets?.FirstOrDefault(a => a.Name == $"Corrector-Setup-{version}-win-x64.exe");
         if (installer?.Digest is not { Length: 71 } digest || !digest.StartsWith("sha256:", StringComparison.Ordinal) ||
-            !digest[7..].All(char.IsAsciiHexDigit) || installer.Size <= 0)
+            !digest[7..].All(char.IsAsciiHexDigit) || installer.Size is <= 0 or > 512L * 1024 * 1024)
             throw new InvalidDataException("В релизе отсутствует проверяемый установщик.");
         return new(version, installer);
     }
@@ -59,7 +59,8 @@ internal static class ReleaseUpdates
             response.EnsureSuccessStatusCode();
             using (var output = new FileStream(partial, FileMode.CreateNew, FileAccess.ReadWrite, FileShare.None, 81920, true))
             {
-                await response.Content.CopyToAsync(output, timeout.Token);
+                using var input = await response.Content.ReadAsStreamAsync(timeout.Token);
+                await Assets.CopyBounded(input, output, asset.Size, timeout.Token);
                 output.Position = 0;
                 if (output.Length != asset.Size || !string.Equals(asset.Digest,
                     "sha256:" + Convert.ToHexString(await SHA256.HashDataAsync(output, timeout.Token)), StringComparison.OrdinalIgnoreCase))
@@ -71,8 +72,46 @@ internal static class ReleaseUpdates
         finally { File.Delete(partial); }
     }
 
-    internal static void StartInstaller(string installer)
+    internal static async Task VerifyPublisher(string installer, string application, CancellationToken token)
     {
+        // Use Windows Authenticode policy (including signed-file integrity and timestamps)
+        // and pin the certificate to the running release. Paths are data, never script text.
+        var powershell = new ProcessStartInfo(Path.Combine(Environment.SystemDirectory,
+            @"WindowsPowerShell\v1.0\powershell.exe")) { UseShellExecute = false, CreateNoWindow = true,
+            WorkingDirectory = Environment.SystemDirectory };
+        powershell.Environment["PSModulePath"] = Path.Combine(Environment.SystemDirectory, @"WindowsPowerShell\v1.0\Modules");
+        powershell.Environment["CorrectorInstaller"] = installer;
+        powershell.Environment["CorrectorApplication"] = application;
+        foreach (string arg in new[] { "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", """
+            $ErrorActionPreference = 'Stop'
+            try {
+                $app = Microsoft.PowerShell.Security\Get-AuthenticodeSignature -LiteralPath $env:CorrectorApplication
+                $setup = Microsoft.PowerShell.Security\Get-AuthenticodeSignature -LiteralPath $env:CorrectorInstaller
+                if ($app.Status -eq 'Valid' -and $setup.Status -eq 'Valid' -and
+                    $app.SignatureType -eq 'Authenticode' -and $setup.SignatureType -eq 'Authenticode' -and
+                    $app.SignerCertificate.GetRawCertDataString() -ceq $setup.SignerCertificate.GetRawCertDataString()) { exit 0 }
+            } catch {}
+            exit 1
+            """ }) powershell.ArgumentList.Add(arg);
+        using var verifier = Process.Start(powershell) ?? throw new IOException("Не удалось проверить издателя.");
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(token);
+        timeout.CancelAfter(TimeSpan.FromSeconds(60));
+        try { await verifier.WaitForExitAsync(timeout.Token); }
+        finally { if (!verifier.HasExited) verifier.Kill(true); }
+        if (verifier.ExitCode != 0) throw new InvalidDataException("Подпись издателя не подтверждена. Автоустановка остановлена.");
+    }
+
+    internal static async Task StartInstaller(string installer, Update update, Func<bool> canInstall, CancellationToken token)
+    {
+        using var locked = new FileStream(installer, FileMode.Open, FileAccess.Read, FileShare.Read);
+        if (locked.Length != update.Installer.Size || !string.Equals(update.Installer.Digest,
+            "sha256:" + Convert.ToHexString(await SHA256.HashDataAsync(locked, token)), StringComparison.OrdinalIgnoreCase))
+            throw new InvalidDataException("Установщик изменился после загрузки.");
+        if (FileVersionInfo.GetVersionInfo(installer).ProductVersion != update.Version.ToString())
+            throw new InvalidDataException("Версия установщика не совпадает с релизом.");
+        await VerifyPublisher(installer, Environment.ProcessPath!, token);
+        while (!canInstall()) await Task.Delay(500, token);
+        token.ThrowIfCancellationRequested();
         // NSIS requires /D last and unquoted even when the directory contains spaces.
         var start = new ProcessStartInfo(installer) {
             UseShellExecute = false, WorkingDirectory = Path.GetDirectoryName(installer)!,
