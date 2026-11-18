@@ -1,0 +1,270 @@
+﻿Unicode true
+RequestExecutionLevel user
+ManifestDPIAware true
+!include "MUI2.nsh"
+!include "LogicLib.nsh"
+!include "FileFunc.nsh"
+!include "x64.nsh"
+!include "${FileList}"
+
+!define RegKey "Software\Microsoft\Windows\CurrentVersion\Uninstall\Corrector"
+Name "Corrector ${Version}"
+OutFile "${SetupExe}"
+InstallDir "$LOCALAPPDATA\Programs\Corrector"
+SetCompressor /SOLID lzma
+VIProductVersion "${Version}.0"
+VIAddVersionKey /LANG=1049 ProductName "Corrector"
+VIAddVersionKey /LANG=1049 ProductVersion "${Version}"
+VIAddVersionKey /LANG=1049 FileVersion "${Version}"
+VIAddVersionKey /LANG=1049 FileDescription "Установщик Corrector для Windows x64"
+VIAddVersionKey /LANG=1049 LegalCopyright "mrrepac"
+!define MUI_ICON "..\CorrectorTray.ico"
+!define MUI_UNICON "..\CorrectorTray.ico"
+!define MUI_ABORTWARNING
+!insertmacro MUI_PAGE_WELCOME
+!insertmacro MUI_PAGE_COMPONENTS
+!define MUI_DIRECTORYPAGE_TEXT_TOP "Выберите папку для Corrector. При переходе с ZIP выберите папку, где лежат Corrector.exe и assets, чтобы сохранить загруженную модель."
+!insertmacro MUI_PAGE_DIRECTORY
+!insertmacro MUI_PAGE_INSTFILES
+!define MUI_FINISHPAGE_RUN "$INSTDIR\Corrector.exe"
+!define MUI_FINISHPAGE_RUN_TEXT "Запустить Corrector"
+!insertmacro MUI_PAGE_FINISH
+!insertmacro MUI_UNPAGE_CONFIRM
+!insertmacro MUI_UNPAGE_INSTFILES
+!insertmacro MUI_LANGUAGE "Russian"
+
+Var Work
+Var PreviousDir
+Var Lock
+Var RestoreFailed
+
+!macro LockSetup
+  System::Call 'kernel32::CreateMutexW(p 0, i 0, w "Local\mrrepac.Corrector.Setup") p.r0 ?e'
+  Pop $1
+  StrCpy $Lock $0
+  ${If} $Lock == 0
+  ${OrIf} $1 == 183
+    MessageBox MB_ICONSTOP "Установка или удаление Corrector уже выполняется." /SD IDOK
+    Abort
+  ${EndIf}
+!macroend
+
+; Stage and back up files on the destination volume so each rename is atomic.
+!macro ReplaceFile Name
+  ${If} ${FileExists} "$INSTDIR\${Name}"
+    ClearErrors
+    Rename "$INSTDIR\${Name}" "$Work\old\${Name}"
+    IfErrors rollback
+  ${EndIf}
+  ClearErrors
+  Rename "$Work\new\${Name}" "$INSTDIR\${Name}"
+  IfErrors rollback
+!macroend
+
+!macro RestoreFile Name
+  ${IfNot} ${FileExists} "$Work\new\${Name}"
+    ClearErrors
+    Delete "$INSTDIR\${Name}"
+    ${If} ${Errors}
+      StrCpy $RestoreFailed 1
+    ${EndIf}
+  ${EndIf}
+  ${If} ${FileExists} "$Work\old\${Name}"
+    ClearErrors
+    Rename "$Work\old\${Name}" "$INSTDIR\${Name}"
+    ${If} ${Errors}
+      StrCpy $RestoreFailed 1
+    ${EndIf}
+  ${EndIf}
+!macroend
+
+Section "Corrector" App
+  SectionIn RO
+  Call CheckDirectory
+  Pop $0
+  ${If} $0 != ""
+    MessageBox MB_ICONSTOP "$0" /SD IDOK
+    Abort
+  ${EndIf}
+  SetOutPath "$INSTDIR"
+  ClearErrors
+  GetTempFileName $Work "$INSTDIR"
+  IfErrors storageFailure
+  Delete "$Work"
+  ClearErrors
+  CreateDirectory "$Work\old\licenses"
+  IfErrors extractFailure
+  SetOutPath "$Work\new"
+  File /r "${PayloadDir}\*.*"
+  IfErrors extractFailure
+  WriteUninstaller "$Work\new\Uninstall-Corrector.exe"
+  IfErrors extractFailure
+  SetOutPath "$INSTDIR"
+  CreateDirectory "$INSTDIR\licenses"
+  IfErrors extractFailure
+  !insertmacro Payload ReplaceFile
+  RMDir /r "$Work"
+
+  WriteRegStr HKCU "${RegKey}" "DisplayName" "Corrector"
+  WriteRegStr HKCU "${RegKey}" "DisplayVersion" "${Version}"
+  WriteRegStr HKCU "${RegKey}" "Publisher" "mrrepac"
+  WriteRegStr HKCU "${RegKey}" "DisplayIcon" "$INSTDIR\Corrector.exe,0"
+  WriteRegStr HKCU "${RegKey}" "InstallLocation" "$INSTDIR"
+  WriteRegStr HKCU "${RegKey}" "UninstallString" '"$INSTDIR\Uninstall-Corrector.exe"'
+  WriteRegStr HKCU "${RegKey}" "QuietUninstallString" '"$INSTDIR\Uninstall-Corrector.exe" /S'
+  WriteRegDWORD HKCU "${RegKey}" "NoModify" 1
+  WriteRegDWORD HKCU "${RegKey}" "NoRepair" 1
+  CreateShortcut "$SMPROGRAMS\Corrector.lnk" "$INSTDIR\Corrector.exe"
+  Goto done
+
+rollback:
+  StrCpy $RestoreFailed 0
+  !insertmacro Payload RestoreFile
+  ${If} $RestoreFailed == 1
+    MessageBox MB_ICONSTOP "Не удалось восстановить файлы. Резервная копия сохранена в $Work\old." /SD IDOK
+    Abort
+  ${EndIf}
+  RMDir /r "$Work"
+  MessageBox MB_ICONSTOP "Файлы заняты или недоступны для записи. Закройте Corrector через меню в трее и повторите установку. Прежние файлы восстановлены." /SD IDOK
+  Abort
+extractFailure:
+  SetOutPath "$TEMP"
+  RMDir /r "$Work"
+storageFailure:
+  MessageBox MB_ICONSTOP "Не удалось записать файлы. Проверьте свободное место и права на папку." /SD IDOK
+  Abort
+done:
+SectionEnd
+
+Section "Ярлык на рабочем столе" Desktop
+  CreateShortcut "$DESKTOP\Corrector.lnk" "$INSTDIR\Corrector.exe"
+SectionEnd
+
+Section -Finish
+  ${If} ${SectionIsSelected} ${Desktop}
+    WriteRegDWORD HKCU "${RegKey}" "DesktopShortcut" 1
+  ${Else}
+    ReadRegDWORD $0 HKCU "${RegKey}" "DesktopShortcut"
+    ${If} $0 == 1
+      Delete "$DESKTOP\Corrector.lnk"
+    ${EndIf}
+    WriteRegDWORD HKCU "${RegKey}" "DesktopShortcut" 0
+  ${EndIf}
+SectionEnd
+
+!insertmacro MUI_FUNCTION_DESCRIPTION_BEGIN
+  !insertmacro MUI_DESCRIPTION_TEXT ${App} "Программа и ярлык в меню «Пуск». Модель загружается при первом запуске."
+  !insertmacro MUI_DESCRIPTION_TEXT ${Desktop} "Быстрый запуск Corrector с рабочего стола."
+!insertmacro MUI_FUNCTION_DESCRIPTION_END
+
+Function .onInit
+  ${IfNot} ${RunningX64}
+    MessageBox MB_ICONSTOP "Для Corrector требуется 64-разрядная Windows." /SD IDOK
+    Abort
+  ${EndIf}
+  !insertmacro LockSetup
+  SetRegView 64
+  SetShellVarContext current
+  ReadRegStr $PreviousDir HKCU "${RegKey}" "InstallLocation"
+  ${If} $PreviousDir != ""
+    StrCpy $INSTDIR "$PreviousDir"
+    ReadRegDWORD $0 HKCU "${RegKey}" "DesktopShortcut"
+    ${If} $0 == 0
+      !insertmacro UnselectSection ${Desktop}
+    ${EndIf}
+  ${EndIf}
+FunctionEnd
+
+!macro CheckCollision Name
+  ${If} ${FileExists} "$INSTDIR\${Name}"
+    Push "В папке уже есть файл ${Name} другой установки."
+    Return
+  ${EndIf}
+!macroend
+
+Function CheckDirectory
+  ${GetRoot} "$INSTDIR" $0
+  ${If} "$INSTDIR" == "$0\"
+  ${OrIf} "$INSTDIR" == "$0"
+    Push "Выберите папку программы внутри диска."
+    Return
+  ${EndIf}
+  ${If} $PreviousDir != ""
+  ${AndIf} $INSTDIR != $PreviousDir
+    Push "Для обновления выберите прежнюю папку: $PreviousDir"
+    Return
+  ${EndIf}
+  ${IfNot} ${FileExists} "$INSTDIR\Corrector.exe"
+  ${OrIfNot} ${FileExists} "$INSTDIR\assets.lock.json"
+    ; An uninstall intentionally leaves downloaded models behind. Reuse such
+    ; a directory if none of the files we would install are already present.
+    ${If} ${FileExists} "$INSTDIR\assets\*.*"
+      !insertmacro Payload CheckCollision
+      Push ""
+      Return
+    ${EndIf}
+    FindFirst $0 $1 "$INSTDIR\*"
+    ${DoWhile} $1 != ""
+      ${If} $1 != "."
+      ${AndIf} $1 != ".."
+        FindClose $0
+        Push "Выберите пустую папку или папку с переносимой версией Corrector."
+        Return
+      ${EndIf}
+      FindNext $0 $1
+    ${Loop}
+    FindClose $0
+  ${EndIf}
+  Push ""
+FunctionEnd
+
+Function .onVerifyInstDir
+  Call CheckDirectory
+  Pop $0
+  ${If} $0 != ""
+    Abort
+  ${EndIf}
+FunctionEnd
+
+Function un.onInit
+  !insertmacro LockSetup
+  SetRegView 64
+  SetShellVarContext current
+  ReadRegStr $0 HKCU "${RegKey}" "InstallLocation"
+  ${If} $0 != $INSTDIR
+    MessageBox MB_ICONSTOP "Запустите удаление Corrector из списка установленных приложений Windows." /SD IDOK
+    Abort
+  ${EndIf}
+FunctionEnd
+
+!macro DeleteInstalled Name
+  ${If} ${FileExists} "$INSTDIR\${Name}"
+    ClearErrors
+    Delete "$INSTDIR\${Name}"
+    IfErrors busy
+  ${EndIf}
+!macroend
+
+Section "Uninstall"
+  ; Check the running binary before removing its libraries. Only packaged files
+  ; are removed: downloaded models, settings and unrelated files are retained.
+  !insertmacro DeleteInstalled "Corrector.exe"
+  !insertmacro Payload DeleteInstalled
+  Delete "$SMPROGRAMS\Corrector.lnk"
+  ReadRegDWORD $0 HKCU "${RegKey}" "DesktopShortcut"
+  ${If} $0 == 1
+    Delete "$DESKTOP\Corrector.lnk"
+  ${EndIf}
+  ReadRegStr $0 HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "ABC-Corrector"
+  ${If} $0 == '"$INSTDIR\Corrector.exe" --background'
+    DeleteRegValue HKCU "Software\Microsoft\Windows\CurrentVersion\Run" "ABC-Corrector"
+  ${EndIf}
+  DeleteRegKey HKCU "${RegKey}"
+  RMDir "$INSTDIR\licenses"
+  RMDir "$INSTDIR"
+  Goto done
+busy:
+  MessageBox MB_ICONSTOP "Закройте Corrector через меню в трее и повторите удаление." /SD IDOK
+  Abort
+done:
+SectionEnd
