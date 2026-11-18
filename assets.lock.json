@@ -1,0 +1,23 @@
+{
+  "model": {
+    "name": "Gemma 4 12B IT QAT · UD-Q4_K_XL",
+    "file": "gemma-4-12B-it-qat-UD-Q4_K_XL.gguf",
+    "url": "https://huggingface.co/unsloth/gemma-4-12b-it-qat-GGUF/resolve/980b060c40a8539ac159e0501a3e0f66a6365af3/gemma-4-12B-it-qat-UD-Q4_K_XL.gguf",
+    "size": 6716356800,
+    "sha256": "90fd44e29e0d7cffeb0fd00dc73cfdab9ed0b0e95306ecf7821ea634c940c370"
+  },
+  "runtime": [
+    {
+      "file": "llama-b12499-bin-win-cuda-12.4-x64.zip",
+      "url": "https://github.com/ggml-org/llama.cpp/releases/download/b12499/llama-b12499-bin-win-cuda-12.4-x64.zip",
+      "size": 363881254,
+      "sha256": "f98cf1852a548912ddc6138b0fc705e1a545d8b952de90004a773bdbdbc1464d"
+    },
+    {
+      "file": "cudart-llama-bin-win-cuda-12.4-x64.zip",
+      "url": "https://github.com/ggml-org/llama.cpp/releases/download/b12499/cudart-llama-bin-win-cuda-12.4-x64.zip",
+      "size": 391443627,
+      "sha256": "8c79a9b226de4b3cacfd1f83d24f962d0773be79f1e7b75c6af4ded7e32ae1d6"
+    }
+  ]
+}

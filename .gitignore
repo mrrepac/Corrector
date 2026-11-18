@@ -1,0 +1,14 @@
+bin/
+obj/
+dist/
+release/
+assets/models/
+assets/runtime/
+assets/downloads/
+*.user
+test-results/
+
+previous-models/
+*.gguf
+# Local development journal and test artifacts
+/TESTING.md
