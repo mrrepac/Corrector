@@ -149,6 +149,19 @@ internal sealed record DraftField(AutomationElement Element, string Prefix, stri
         return new DraftField(element, prefix, selected, explicitSelection, enterAfterPaste);
     }
 
+    internal bool CollapseToEnd(CutGesture gesture, uint sequence)
+    {
+        var pattern = (TextPattern)Element.GetCurrentPattern(TextPattern.Pattern);
+        var selection = SingleSelection(pattern);
+        if (selection == null || !SameText(selection.GetText(-1), Text) ||
+            !SameText(Before(pattern, selection), Prefix)) return false;
+        selection.MoveEndpointByRange(TextPatternRangeEndpoint.Start, selection, TextPatternRangeEndpoint.End);
+        if (!Element.Equals(AutomationElement.FocusedElement) || !gesture.IsCurrent ||
+            sequence != Native.GetClipboardSequenceNumber()) return false;
+        selection.Select();
+        return true;
+    }
+
     internal bool Matches(string expectedPrefix, string expectedSelection)
     {
         if (!Element.Equals(AutomationElement.FocusedElement)) return false;

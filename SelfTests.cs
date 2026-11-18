@@ -44,9 +44,24 @@ internal static class SelfTests
             Check("empty line at caret", DraftField.BlockStart(stanza + newline) == stanza.Length + newline.Length);
         }
         Check("empty field", DraftField.BlockStart("") == 0);
+        foreach (var (sample, expected) in new[] {
+            ("15+145=", "160"), ("Итого: 2+3*4=", "14"), ("(2+3)*4=", "20"),
+            ("Строка выше\r\nЦена: 7,5/2=", "3,75"), ("-1.2 * (-5)=", "6"),
+            ("200+15%=", "230"), ("200-15%=", "170"), ("200*15%=", "30"),
+            ("200/25%=", "800"), ("15%=", "0,15"), ("100+10%-10%=", "99"),
+            ("200+(5+10)%=", "230"), ("100+2*10%=", "100,2"), ("1.5/2=", "0.75") })
+            Check("calculate " + sample, Calculator.Expression(sample) is string expr && Calculator.Evaluate(expr) == expected);
+        foreach (string sample in new[] { "Привет!", "x=", "15+145", "item2=", "2^3=", "2+3=5" })
+            Check("skip non-calculation " + sample, Calculator.Expression(sample) == null);
+        foreach (string sample in new[] { "15+=", "1/0=", "(2+3=", "2 3=", "1%%=", "1,2.3=", "2*/5=",
+            "99999999999999999999999999999*10=", new string('(', 1000) + "1=" })
+        {
+            try { Calculator.Evaluate(Calculator.Expression(sample)!); Check("reject " + sample, false); }
+            catch (InvalidOperationException) { Check("reject " + sample, true); }
+        }
         var defaults = new AppSettings();
         Check("release versions compared numerically", ReleaseUpdates.ParseTag("v1.10.0") > new Version(1, 9, 9, 0));
-        Check("installed release is current", ReleaseUpdates.ParseTag("v1.2.0") <= new Version(1, 2, 0, 0));
+        Check("installed release is current", ReleaseUpdates.ParseTag("v1.3.0") == new Version(ReleaseUpdates.Installed.ToString(3)));
         try { ReleaseUpdates.ParseTag("v1.3.0-beta.1"); Check("ignore preview versions", false); }
         catch (InvalidDataException) { Check("ignore preview versions", true); }
         Check("translate single English word",defaults.ShouldTranslate("Hello!",true));

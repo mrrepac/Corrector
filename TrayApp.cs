@@ -42,7 +42,7 @@ internal sealed class TrayApp : ApplicationContext
         };
         menu.Items.Add(checkUpdates);
         menu.Items.Add(openRelease);
-        menu.Items.Add("Как пользоваться",null,(_,_)=>Notify($"Дважды нажми Ctrl+X для корректуры. Для перевода выдели {settings.TranslationSource} текст и нажми ту же комбинацию.")).Tag="\uE897";
+        menu.Items.Add("Как пользоваться",null,(_,_)=>Notify($"Дважды нажми Ctrl+X для корректуры. Для вычисления допиши = после примера. Для перевода выдели {settings.TranslationSource} текст и нажми ту же комбинацию.")).Tag="\uE897";
         var modeMenu = new ToolStripMenuItem("Режим корректуры") { Tag="\uE713" };
         foreach (var (mode, label) in new[] { (CorrectionMode.Auto, "Авто"), (CorrectionMode.Verse, "Стихи"), (CorrectionMode.Prose, "Проза") })
         {
@@ -165,7 +165,7 @@ internal sealed class TrayApp : ApplicationContext
             DraftField? field=null;
             string text;
             bool explicitSelection;
-            if (visible != null && preferences.ShouldTranslate(visible,true))
+            if (visible != null && Calculator.Expression(visible) == null && preferences.ShouldTranslate(visible,true))
             {
                 text=visible;
                 explicitSelection=true;
@@ -200,7 +200,7 @@ internal sealed class TrayApp : ApplicationContext
                     }
                     keyboardField = max;
                 }
-                catch (NoDraftFieldException) when (cut==null && string.IsNullOrEmpty(visible))
+                catch (NoDraftFieldException) when (cut==null && (string.IsNullOrEmpty(visible) || preferences.ShouldTranslate(visible,true)))
                 {
                     // Some browser/PDF viewers only expose their selection through Copy.
                 }
@@ -226,6 +226,28 @@ internal sealed class TrayApp : ApplicationContext
             }
             original=text;result=null;copyOriginal.Enabled=true;copyResult.Enabled=false;
             operation=CancellationTokenSource.CreateLinkedTokenSource(lifetime.Token);cancel.Enabled=true;
+            if ((keyboardField != null || field != null) && Calculator.Expression(text) is string expression)
+            {
+                string answer;
+                try { answer = Calculator.Evaluate(expression); }
+                catch (InvalidOperationException ex)
+                {
+                    if (!explicitSelection && gesture.IsCurrent && sequence == Native.GetClipboardSequenceNumber())
+                        Native.Chord(0x27);
+                    Status("Проверь выражение");
+                    Notify(ex.Message, "Калькулятор", NoticeKind.Warning);
+                    return;
+                }
+                result = answer;
+                copyResult.Text = "Скопировать ответ";
+                copyResult.Enabled = true;
+                bool appended = keyboardField != null
+                    ? await keyboardField.AppendAnswer(answer, operation.Token)
+                    : await SelectedText.AppendAnswer(gesture, field!, answer, sequence, operation.Token);
+                Status(appended ? "Вычислено" : "Вставка не подтверждена");
+                if (!appended) Notify("Ответ доступен в меню Corrector.", "Проверь текст в поле", NoticeKind.Warning);
+                return;
+            }
             translating=preferences.ShouldTranslate(text,explicitSelection);
             cancel.Text=translating ? "Отменить перевод" : "Отменить проверку";
             copyResult.Text=translating ? "Скопировать перевод" : "Скопировать исправленный текст";

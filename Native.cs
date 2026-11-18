@@ -196,6 +196,14 @@ internal static class SelectedText
             catch(ExternalException ex){throw new IOException("Не удалось вернуть исходник в занятый буфер. Он сохранён в меню C → «Скопировать исходник».",ex);}
         }
     }
+    internal static async Task<bool> AppendAnswer(CutGesture gesture, DraftField field, string answer,
+        uint sequence, CancellationToken token)
+    {
+        if (token.IsCancellationRequested || !await Task.Run(() => field.CollapseToEnd(gesture, sequence))) return false;
+        var caret = field with { Prefix = field.Prefix + field.Text, Text = "", EnterAfterPaste = false };
+        return await ReplaceVerified(gesture, caret, field.Text, answer, sequence, token);
+    }
+
     public static async Task<bool> ReplaceVerified(CutGesture gesture, DraftField field, string original, string replacement,
         uint sequence, CancellationToken token)
     {

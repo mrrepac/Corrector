@@ -65,5 +65,29 @@ internal abstract class KeyboardSelection(CutGesture gesture, uint sequence)
         }
     }
 
+    internal async Task<bool> AppendAnswer(string answer, CancellationToken token)
+    {
+        string? owner = null;
+        try
+        {
+            if (await Copy() != Text) return false;
+            Key(Right);
+            Key(Left, shift:true);
+            if (await Copy() != "=") return false;
+            Key(Right);
+            token.ThrowIfCancellationRequested();
+            Check();
+            owner = Guid.NewGuid().ToString("N");
+            ClipboardText.Write(answer, owner);
+            clipboard = Native.GetClipboardSequenceNumber();
+            Key(0x56, ctrl:true);
+            await MoveCharacters(answer, true, true);
+            if (await Copy() != answer) return false;
+            Key(Right);
+            return true;
+        }
+        finally { ClipboardText.RestoreIfOwned(Text, clipboard, owner); }
+    }
+
     internal abstract Task<bool> ReplaceVerified(string replacement, CancellationToken token);
 }
