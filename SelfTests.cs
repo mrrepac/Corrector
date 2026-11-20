@@ -34,6 +34,7 @@ internal static class SelfTests
     {
         var failures=new List<string>();int count=0;
         void Check(string name,bool value){count++;if(!value)failures.Add(name);}
+        ReviewDiffChecks.Run(Check);
         var buffer = System.Runtime.InteropServices.Marshal.StringToHGlobalUni("тест");
         try
         {
@@ -128,6 +129,50 @@ internal static class SelfTests
         Check("draft prefers paragraphs",parts[0]==paragraph+"\r\n\r\n");
         Check("draft restores paragraph breaks",Correction.KeepDraftLayout("Раз два.\r\n\r\nТри.","Раз,\r\nдва. Три.")=="Раз, два.\r\n\r\nТри.");
         Check("ambiguous edited lines need retry",Correction.KeepDraftLayout("Я незнаю.\r\nКто это?","Я не знаю. Кто это?")==null);
+        Check("verse restores a shifted LF despite identical break counts",
+            Correction.KeepDraftLayout("Первая строка\nВторая строка", "Первая\nстрока Вторая строка", true)
+                == "Первая строка\nВторая строка");
+        Check("verse restores the break and preserves a contextual spelling edit",
+            Correction.KeepDraftLayout("Мой элексир сиял\r\nВ ладони", "Мой эликсир\r\nсиял в ладони", true)
+                == "Мой эликсир сиял\r\nв ладони");
+        Check("verse retains indentation, intra-line spacing, and blank stanza lines",
+            Correction.KeepDraftLayout("  Вада  течёт \r\n\t\r\n  До моря\t", "Вода\nтечёт до моря", true)
+                == "  Вода  течёт \r\n\t\r\n  до моря\t");
+        Check("verse permits a word split inside an anchored line",
+            Correction.KeepDraftLayout("Я незнаю почему\nТы молчишь", "Я не знаю\nпочему ты молчишь", true)
+                == "Я не знаю почему\nты молчишь");
+        Check("verse retries per source line when a boundary word was edited",
+            Correction.KeepDraftLayout("Я вижу мрое\nУ ног", "Я вижу\nморе у ног", true) == null);
+        Check("verse retries when repeated words leave a break ambiguous",
+            Correction.KeepDraftLayout("Я шол тихо тихо\nтихо вдоль реки", "Я шёл тихо\nтихо тихо вдоль реки", true) == null);
+        Check("verse does not accept reordered boundary anchors",
+            Correction.KeepDraftLayout("Мой закат\nУ рек\nДо рассвета", "У рек до рассвета\nМой закат\nУ ручья", true) == null);
+        Check("verse retries when words cross intact boundary anchors",
+            Correction.KeepDraftLayout("Город ещё ждёт\nИ туман ушёл", "Туман ещё ждёт\nИ город ушёл", true) == null);
+        Check("prose retains its existing layout handling",
+            Correction.KeepDraftLayout("Мой элексир сиял\nВ ладони", "Мой эликсир\nсиял в ладони")
+                == "Мой эликсир\nсиял в ладони");
+        foreach (string separator in new[] { "\r\n", "\n", "\r", "\f", "\u0085", "\u2028", "\u2029" })
+        {
+            string prefix = new string('я', Correction.MaxChars - 4) + separator;
+            string stanza = "Я вижу мрое" + separator + "У ног";
+            var requests = new List<(string, CorrectionMode)>();
+            var progress = new List<(int, int)>();
+            Task<string> Answer(string part, CorrectionMode mode)
+            {
+                requests.Add((part, mode));
+                return Task.FromResult(part == stanza ? "Я вижу\nморе у ног" :
+                    part == "Я вижу мрое" ? "Я" + separator + "вижу море" : part);
+            }
+            var correctedDraft = Engine.CorrectDraft(prefix + stanza, CancellationToken.None, CorrectionMode.Auto,
+                (index, count) => progress.Add((index, count)), Answer).GetAwaiter().GetResult();
+            string label = $"U+{(int)separator[0]:X4} length {separator.Length}";
+            Check("verse chunks and fallback keep " + label,
+                correctedDraft.Text == prefix + "Я вижу море" + separator + "У ног" && !correctedDraft.NeedsReview &&
+                progress.SequenceEqual([(1, 2), (2, 2)]) &&
+                requests.SequenceEqual([(prefix, CorrectionMode.Verse), (stanza, CorrectionMode.Verse),
+                    ("Я вижу мрое", CorrectionMode.Verse), ("У ног", CorrectionMode.Verse)]));
+        }
         Check("short draft stays whole",Correction.SplitDraft(paragraph).SequenceEqual([paragraph]));
         string longWord=new string('я',Correction.MaxChars);
         Check("exact limit word",Correction.SplitDraft(longWord+" конец")[0]==longWord);

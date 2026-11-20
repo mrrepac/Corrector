@@ -62,7 +62,11 @@ internal sealed class Engine : IDisposable
         }
         finally { gate.Release(); }
     }
-    public async Task<(string Text, bool NeedsReview)> CorrectDraft(string text,CancellationToken ct,CorrectionMode mode,Action<int,int> showPart,AppSettings settings)
+    public Task<(string Text, bool NeedsReview)> CorrectDraft(string text,CancellationToken ct,CorrectionMode mode,Action<int,int> showPart,AppSettings settings) =>
+        CorrectDraft(text, ct, mode, showPart, (part, draftMode) => Correct(part, ct, draftMode, settings));
+
+    internal static async Task<(string Text, bool NeedsReview)> CorrectDraft(string text, CancellationToken ct, CorrectionMode mode,
+        Action<int,int> showPart, Func<string,CorrectionMode,Task<string>> correct)
     {
         var parts = Correction.SplitDraft(text);
         var result = new System.Text.StringBuilder(text.Length);
@@ -74,8 +78,8 @@ internal sealed class Engine : IDisposable
             showPart(i+1, parts.Count);
             string part = parts[i];
             if(string.IsNullOrWhiteSpace(part)){result.Append(part);continue;}
-            string corrected=await Correct(part,ct,draftMode,settings);
-            string? formatted=Correction.KeepDraftLayout(part,corrected);
+            string corrected=await correct(part, draftMode);
+            string? formatted = Correction.KeepDraftLayout(part, corrected, preserveVerseLines: draftMode == CorrectionMode.Verse);
             if(formatted!=null)
             {
                 review |= Correction.NeedsReview(part, formatted);
@@ -84,12 +88,12 @@ internal sealed class Engine : IDisposable
             }
             // A lexical edit and a changed layout can make the original breaks ambiguous.
             // In that case correct each original line separately and copy its separators verbatim.
-            foreach(string line in System.Text.RegularExpressions.Regex.Split(part,@"(\r\n|\r|\n)"))
+            foreach(string line in Correction.LineBreak.Split(part))
             {
                 ct.ThrowIfCancellationRequested();
                 if(string.IsNullOrWhiteSpace(line)){result.Append(line);continue;}
-                string singleLine=line==part ? corrected : await Correct(line,ct,draftMode,settings);
-                string replacement = System.Text.RegularExpressions.Regex.Replace(singleLine,@"\s*[\r\n]+\s*"," ");
+                string singleLine=line==part ? corrected : await correct(line, draftMode);
+                string replacement = System.Text.RegularExpressions.Regex.Replace(singleLine.ReplaceLineEndings("\n"),@"\s*\n\s*"," ");
                 review |= Correction.NeedsReview(line, replacement);
                 result.Append(replacement);
             }

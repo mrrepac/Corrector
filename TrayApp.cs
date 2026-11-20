@@ -10,6 +10,7 @@ internal sealed class TrayApp : ApplicationContext
     readonly TrayMenu menu = new();
     readonly NotificationCard notification = new();
     readonly ToolStripMenuItem checkUpdates = new("Проверить обновления");
+    readonly ToolStripMenuItem showChanges = new("Показать, что исправлено") { Enabled = false, Tag = "\uE890" };
     readonly System.Windows.Forms.Timer updateTimer = new() { Interval = (int)TimeSpan.FromHours(4).TotalMilliseconds };
     readonly DoubleCutHook hook;
     readonly CancellationTokenSource lifetime=new();
@@ -21,9 +22,11 @@ internal sealed class TrayApp : ApplicationContext
     AppSettings settings = SettingsStore.Load();
     CorrectionMode correctionMode = CorrectionMode.Auto;
     string? original,result;
+    (string Original, string Corrected, bool NeedsReview)? lastCorrection;
     bool busy,loading,closing;
     string partStatus="";
     TranslationPopup? popup;
+    ReviewPopup? reviewPopup;
     SettingsWindow? settingsWindow;
     bool translating;
     public TrayApp(bool updateFailed)
@@ -53,7 +56,8 @@ internal sealed class TrayApp : ApplicationContext
         menu.Items.Add(modeMenu);
         cancel.Tag="\uE711";copyOriginal.Tag="\uE8C8";copyResult.Tag="\uE8F3";
         menu.Items.Add(new ToolStripSeparator());
-        menu.Items.Add(cancel);menu.Items.Add(copyOriginal);menu.Items.Add(copyResult);
+        menu.Items.Add(cancel);menu.Items.Add(showChanges);menu.Items.Add(copyOriginal);menu.Items.Add(copyResult);
+        showChanges.Click += (_, _) => ShowLastCorrection(activate: true);
         cancel.Click+=(_,_)=>operation?.Cancel();copyOriginal.Click+=(_,_)=>Copy(original,"Исходник в буфере. Вставь его через Ctrl+V.");copyResult.Click+=(_,_)=>Copy(result,"Текст в буфере. Вставь его через Ctrl+V.");
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add("Загрузить модель",null,async(_,_)=>await Prepare()).Tag="\uE896";
@@ -93,11 +97,10 @@ internal sealed class TrayApp : ApplicationContext
             checkUpdates.Text = $"Скачивается Corrector {update.Version}…";
             string installer = await ReleaseUpdates.Download(update, lifetime.Token);
             checkUpdates.Text = $"Готово обновление {update.Version}";
-            while (busy || loading || settingsWindow != null || popup != null || menu.Visible)
+            while (!CanInstallUpdate())
                 await Task.Delay(500, lifetime.Token);
             lifetime.Token.ThrowIfCancellationRequested();
-            await ReleaseUpdates.StartInstaller(installer, update,
-                () => !busy && !loading && settingsWindow == null && popup == null && !menu.Visible, lifetime.Token);
+            await ReleaseUpdates.StartInstaller(installer, update, CanInstallUpdate, lifetime.Token);
             ExitThread();
         }
         catch (OperationCanceledException) when (closing) { }
@@ -111,6 +114,28 @@ internal sealed class TrayApp : ApplicationContext
             if (!closing) { checkUpdates.Text = "Проверить обновления"; checkUpdates.Enabled = true; }
         }
     }
+    bool CanInstallUpdate() => !busy && !loading && settingsWindow == null && popup == null && reviewPopup == null && !menu.Visible;
+
+    void ShowLastCorrection(bool activate)
+    {
+        if (lastCorrection is not { } last) return;
+        if (reviewPopup != null)
+        {
+            if (activate)
+            {
+                if (reviewPopup.WindowState == System.Windows.WindowState.Minimized)
+                    reviewPopup.WindowState = System.Windows.WindowState.Normal;
+                reviewPopup.Activate();
+            }
+            return;
+        }
+
+        var window = new ReviewPopup(last.Original, last.Corrected, last.NeedsReview) { ShowActivated = activate };
+        window.Closed += (_, _) => reviewPopup = null;
+        window.Show();
+        reviewPopup = window;
+    }
+
     void OpenSettings()
     {
         if (settingsWindow != null) { settingsWindow.Activate(); return; }
@@ -296,17 +321,17 @@ internal sealed class TrayApp : ApplicationContext
                 return;
             }
             var draft=await engine.CorrectDraft(text,operation.Token,correctionMode,Progress,preferences);
+            operation.Token.ThrowIfCancellationRequested();
             result=draft.Text;
             copyResult.Enabled=true;
-            operation.Token.ThrowIfCancellationRequested();
+            reviewPopup?.Close();
+            lastCorrection = (text, result, draft.NeedsReview);
+            showChanges.Enabled = true;
             if (draft.NeedsReview)
             {
                 Status("Нужен просмотр исправления");
                 popup?.Close();
-                popup = new TranslationPopup("Проверь исправление перед вставкой");
-                popup.Closed += (_, _) => popup = null;
-                popup.Show();
-                popup.Display(result, true);
+                ShowLastCorrection(activate: false);
                 return;
             }
             if(keyboardField!=null ? await keyboardField.ReplaceVerified(result,operation.Token) :
@@ -330,6 +355,6 @@ internal sealed class TrayApp : ApplicationContext
     protected override void ExitThreadCore()
     {
         updateTimer.Dispose();
-        closing=true;settingsWindow?.Close();lifetime.Cancel();operation?.Cancel();popup?.Close();hook.Dispose();timer.Stop();timer.Dispose();engine.Dispose();tray.Visible=false;tray.Icon?.Dispose();tray.Dispose();menu.Dispose();notification.Dispose();dispatcher.Dispose();base.ExitThreadCore();
+        closing=true;settingsWindow?.Close();lifetime.Cancel();operation?.Cancel();popup?.Close();reviewPopup?.Close();hook.Dispose();timer.Stop();timer.Dispose();engine.Dispose();tray.Visible=false;tray.Icon?.Dispose();tray.Dispose();menu.Dispose();notification.Dispose();dispatcher.Dispose();base.ExitThreadCore();
     }
 }

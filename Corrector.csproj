@@ -6,7 +6,7 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <AssemblyName>Corrector</AssemblyName>
-    <Version>1.4.3</Version>
+    <Version>1.5.0</Version>
     <Product>Corrector</Product>
     <ApplicationIcon>CorrectorTray.ico</ApplicationIcon>
     <ApplicationManifest>app.manifest</ApplicationManifest>
@@ -15,6 +15,7 @@
     <EmbeddedResource Include="CorrectorTray.ico" LogicalName="Corrector.CorrectorTray.ico" />
     <EmbeddedResource Include="SettingsWindow.xaml" LogicalName="Corrector.SettingsWindow.xaml" />
     <EmbeddedResource Include="TranslationCard.xaml" LogicalName="Corrector.TranslationCard.xaml" />
+    <EmbeddedResource Include="ReviewCard.xaml" LogicalName="Corrector.ReviewCard.xaml" />
     <FrameworkReference Include="Microsoft.WindowsDesktop.App" />
     <Content Include="assets.lock.json" CopyToOutputDirectory="Always" CopyToPublishDirectory="Always" ExcludeFromSingleFile="true" />
     <Content Include="README.md;THIRD_PARTY.md;licenses/*.txt" CopyToPublishDirectory="PreserveNewest" ExcludeFromSingleFile="true" />

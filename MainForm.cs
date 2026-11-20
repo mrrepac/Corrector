@@ -118,7 +118,7 @@ internal sealed class MainForm : Form
         catch(Exception ex){Error(ex);start.Visible=true;}
         finally{initializing=false;Finish();}
     }
-    async Task<string> Run(string text)
+    async Task<(string Text, bool NeedsReview)> Run(string text)
     {
         if(string.IsNullOrWhiteSpace(text))throw new ArgumentException("Вставь или выдели текст для проверки.");
         if(text.Length>Correction.MaxChars)throw new ArgumentException("Для одной проверки выдели не больше 6000 символов.");
@@ -127,14 +127,14 @@ internal sealed class MainForm : Form
         if(!engine.Ready){initializing=true;stateTitle.Text="Подготовка модели";try{await engine.Start(new Progress<string>(SetStatus),operation.Token);}finally{initializing=false;}}
         checking=true;timer.Restart();
         SetStatus("Орфография, грамматика и пунктуация. Дождись результата справа.\nБольшой текст может занять несколько минут. Проверку можно отменить.");
-        return await engine.Correct(text,operation.Token);
+        return await engine.CorrectDraft(text, operation.Token, CorrectionMode.Auto, (_, _) => { }, SettingsStore.Load());
     }
     void Finish(){busy=false;checking=false;timer.Stop();activity.Visible=false;activity.MarqueeAnimationSpeed=0;Text="Corrector — русский корректор";test.Text="Исправить";original.ReadOnly=false;cancel.Enabled=false;test.Enabled=engine.Ready;copy.Enabled=corrected.TextLength>0;operation?.Dispose();operation=null;SetStatus(status.Text);SaveSettings();}
     void Cancelled(){engine.Stop();start.Visible=true;Outcome("Проверка отменена","Исходный текст сохранён. Следующий запуск снова загрузит модель.");}
     async Task CorrectEditor()
     {
         if(busy)return;busy=true;string source=original.Text;
-        try{corrected.Text=await Run(source);Outcome(corrected.Text==source?"Готово — ошибок не найдено":"Готово — текст исправлен",$"Время: {timer.Elapsed.TotalSeconds:F1} с. Результат справа; нажми «Копировать», чтобы забрать его.");}
+        try{corrected.Text=(await Run(source)).Text;Outcome(corrected.Text==source?"Готово — ошибок не найдено":"Готово — текст исправлен",$"Время: {timer.Elapsed.TotalSeconds:F1} с. Результат справа; нажми «Копировать», чтобы забрать его.");}
         catch(OperationCanceledException){Cancelled();}catch(Exception ex){Error(ex);}finally{Finish();}
     }
     async Task CorrectSelection()
@@ -146,9 +146,9 @@ internal sealed class MainForm : Form
             var selection=await SelectedText.Capture();
             if(selection.Text.Length>Correction.MaxChars)throw new ArgumentException("Выдели не больше 6000 символов.");
             Notify("Проверяю выделенный текст. Дождись завершения; не меняй окно и выделение для автоматической замены.");
-            var result=await Run(selection.Text);
+            var (result, needsReview) = await Run(selection.Text);
             if(result==selection.Text){corrected.Text=result;Outcome("Готово — ошибок не найдено",$"Проверено за {timer.Elapsed.TotalSeconds:F1} с. Текст оставлен без изменений.");Notify("Ошибок не найдено.");return;}
-            bool review=preview.Checked||Correction.NeedsReview(selection.Text,result);
+            bool review=preview.Checked||needsReview||Correction.NeedsReview(selection.Text,result);
             if(!review && await SelectedText.Replace(selection,result))
             {
                 lastOriginal=selection.Text;lastResult=result;
