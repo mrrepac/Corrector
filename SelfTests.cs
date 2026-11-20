@@ -35,6 +35,7 @@ internal static class SelfTests
         var failures=new List<string>();int count=0;
         void Check(string name,bool value){count++;if(!value)failures.Add(name);}
         ReviewDiffChecks.Run(Check);
+        ReleaseUpdateSignatureChecks.Run(Check);
         var buffer = System.Runtime.InteropServices.Marshal.StringToHGlobalUni("тест");
         try
         {
@@ -84,10 +85,11 @@ internal static class SelfTests
         var defaults = new AppSettings();
         Check("release versions compared numerically", ReleaseUpdates.ParseTag("v1.10.0") > new Version(1, 9, 9, 0));
         var asset = new ReleaseUpdates.Asset("Corrector-Setup-1.4.0-win-x64.exe", 100, "sha256:" + new string('a', 64));
-        Check("choose installer for newer release", ReleaseUpdates.Select("v1.4.0", [asset], new Version(1,3,0))?.Installer == asset);
+        var signature = new ReleaseUpdates.Asset(asset.Name + ".sig", 64, "sha256:" + new string('b', 64));
+        Check("choose installer for newer release", ReleaseUpdates.Select("v1.4.0", [asset, signature], new Version(1,3,0))?.Installer == asset);
         Check("do not reinstall current release", ReleaseUpdates.Select("v" + ReleaseUpdates.Installed.ToString(3), [], ReleaseUpdates.Installed) == null);
         Check("do not downgrade", ReleaseUpdates.Select("v1.3.0", [], ReleaseUpdates.Installed) == null);
-        try { ReleaseUpdates.Select("v1.4.0", [asset with { Digest = null }], new Version(1,3,0)); Check("require installer digest", false); }
+        try { ReleaseUpdates.Select("v1.4.0", [asset with { Digest = null }, signature], new Version(1,3,0)); Check("require installer digest", false); }
         catch (InvalidDataException) { Check("require installer digest", true); }
         try { ReleaseUpdates.ParseTag("v1.3.0-beta.1"); Check("ignore preview versions", false); }
         catch (InvalidDataException) { Check("ignore preview versions", true); }

@@ -1,7 +1,8 @@
 ﻿param(
     [string]$PortableZip,
     [string]$Compiler,
-    [string]$SigningThumbprint
+    [string]$SigningThumbprint,
+    [switch]$SignUpdate
 )
 $ErrorActionPreference = 'Stop'
 $root = $PSScriptRoot
@@ -20,10 +21,11 @@ if (!$Compiler) {
     }
 }
 if (!$Compiler) { throw 'Установите NSIS 3 или укажите путь к makensis.exe через -Compiler.' }
-$base = [IO.Path]::GetFullPath([IO.Path]::GetTempPath())
+$dist = Join-Path $root 'dist'
+# Stage on the output volume so the completed installer can be replaced atomically.
+$base = [IO.Path]::GetFullPath($dist)
 $work = Join-Path $base ("Corrector-Setup-" + [guid]::NewGuid().ToString('N'))
 $payload = Join-Path $work 'payload'
-$dist = Join-Path $root 'dist'
 $output = Join-Path $dist "Corrector-Setup-$version-win-x64.exe"
 New-Item -ItemType Directory -Path $payload -Force | Out-Null
 try {
@@ -55,12 +57,28 @@ try {
     $list = Join-Path $work 'payload.nsh'
     [IO.File]::WriteAllLines($list, [string[]]$manifest)
     New-Item -ItemType Directory -Path $dist -Force | Out-Null
-    $built = Join-Path $work 'Corrector-Setup.exe'
+    $built = Join-Path $work ([IO.Path]::GetFileName($output))
     & $Compiler /V2 "/DVersion=$version" "/DPayloadDir=$payload" "/DFileList=$list" "/DSetupExe=$built" (Join-Path $root 'installer\Corrector.nsi')
     if ($LASTEXITCODE -ne 0) { throw "Ошибка NSIS: $LASTEXITCODE" }
     if ($SigningThumbprint) { & "$root/sign-release.ps1" -File $built -Thumbprint $SigningThumbprint }
-    Copy-Item -LiteralPath $built -Destination $output -Force
+    if ($SignUpdate) { & "$root/sign-update.ps1" -Installer $built | Out-Null }
+
+    $publishLock = [Threading.Mutex]::new($false, 'Local\mrrepac.Corrector.BuildInstaller')
+    try {
+        try { $acquired = $publishLock.WaitOne(0) }
+        catch [Threading.AbandonedMutexException] { $acquired = $true }
+        if (!$acquired) { throw 'Another build is publishing an installer; retry the build.' }
+        try {
+            # Invalidate any old signature before replacing its installer. A local
+            # unsigned rebuild of the same version must not inherit a release signature.
+            [IO.File]::Delete("$output.sig")
+            if ([IO.File]::Exists($output)) { [IO.File]::Replace($built, $output, [NullString]::Value) }
+            else { [IO.File]::Move($built, $output) }
+            if ($SignUpdate) { [IO.File]::Move("$built.sig", "$output.sig") }
+        } finally { $publishLock.ReleaseMutex() }
+    } finally { $publishLock.Dispose() }
     Write-Output $output
+    if ($SignUpdate) { Write-Output "$output.sig" }
 } finally {
     $resolved = (Resolve-Path -LiteralPath $work).Path
     if ([IO.Path]::GetDirectoryName($resolved) -eq $base.TrimEnd('\') -and

@@ -8,6 +8,7 @@ ManifestDPIAware true
 !include "${FileList}"
 
 !define RegKey "Software\Microsoft\Windows\CurrentVersion\Uninstall\Corrector"
+!define UpdateReadyPrefix "Local\mrrepac.Corrector.UpdateReady."
 Name "Corrector ${Version}"
 OutFile "${SetupExe}"
 InstallDir "$LOCALAPPDATA\Programs\Corrector"
@@ -38,6 +39,8 @@ Var PreviousDir
 Var Lock
 Var RestoreFailed
 Var UpdatePid
+Var UpdateReady
+Var CanRelaunch
 Var PortableUpdate
 
 !macro LockSetup
@@ -177,6 +180,31 @@ SectionEnd
   !insertmacro MUI_DESCRIPTION_TEXT ${Desktop} "Быстрый запуск Corrector с рабочего стола."
 !insertmacro MUI_FUNCTION_DESCRIPTION_END
 
+Function SignalReadyAndWaitForParent
+  System::Call 'kernel32::OpenProcess(i 0x100000, i 0, i $UpdatePid) p.r2'
+  ${If} $2 == 0
+    Abort
+  ${EndIf}
+  ; The client owns this event. A missing event leaves its process running.
+  System::Call 'kernel32::OpenEventW(i 2, i 0, w "$UpdateReady") p.r3'
+  ${If} $3 == 0
+    System::Call 'kernel32::CloseHandle(p r2)'
+    Abort
+  ${EndIf}
+  System::Call 'kernel32::SetEvent(p r3) i.r4'
+  System::Call 'kernel32::CloseHandle(p r3)'
+  ${If} $4 == 0
+    System::Call 'kernel32::CloseHandle(p r2)'
+    Abort
+  ${EndIf}
+  ; The client may finish a newly started correction before exiting.
+  System::Call 'kernel32::WaitForSingleObject(p r2, i -1) i.r4'
+  System::Call 'kernel32::CloseHandle(p r2)'
+  ${If} $4 != 0
+    Abort
+  ${EndIf}
+FunctionEnd
+
 Function .onInit
   ${IfNot} ${RunningX64}
     MessageBox MB_ICONSTOP "Для Corrector требуется 64-разрядная Windows." /SD IDOK
@@ -187,27 +215,53 @@ Function .onInit
   ReadRegStr $PreviousDir HKCU "${RegKey}" "InstallLocation"
   ${GetParameters} $0
   ${GetOptions} $0 "/UPDATEPID=" $UpdatePid
+  ClearErrors
+  ${GetOptions} $0 "/UPDATEREADY=" $UpdateReady
+  ${IfNot} ${Errors}
+    StrLen $1 "${UpdateReadyPrefix}"
+    StrCpy $2 $UpdateReady $1
+    StrCpy $3 $UpdateReady "" $1
+    StrLen $4 $3
+    System::Call 'shlwapi::StrSpnW(w r3, w "0123456789abcdefABCDEF") i.r5'
+    ${If} $UpdatePid == ""
+    ${OrIf} $2 S!= "${UpdateReadyPrefix}"
+    ${OrIf} $4 != 32
+    ${OrIf} $5 != 32
+      Abort
+    ${EndIf}
+  ${EndIf}
   ${If} $UpdatePid != ""
     ${IfNot} ${FileExists} "$INSTDIR\Corrector.exe"
     ${OrIfNot} ${FileExists} "$INSTDIR\assets.lock.json"
       Abort
     ${EndIf}
-    ; Windows releases the executable and the model engine when the parent exits.
-    System::Call 'kernel32::OpenProcess(i 0x100000, i 0, i $UpdatePid) p.r0'
-    ${If} $0 != 0
-      System::Call 'kernel32::WaitForSingleObject(p r0, i 60000) i.r1'
-      System::Call 'kernel32::CloseHandle(p r0)'
-      ${If} $1 != 0
-        Abort
-      ${EndIf}
-    ${EndIf}
     ${If} $PreviousDir != $INSTDIR
       StrCpy $PortableUpdate 1
+    ${EndIf}
+    Call CheckDirectory
+    Pop $0
+    ${If} $0 != ""
+      Abort
+    ${EndIf}
+    ${If} $UpdateReady == ""
+      ; Older clients exit immediately after launching the installer.
+      System::Call 'kernel32::OpenProcess(i 0x100000, i 0, i $UpdatePid) p.r0'
+      ${If} $0 != 0
+        System::Call 'kernel32::WaitForSingleObject(p r0, i 60000) i.r1'
+        System::Call 'kernel32::CloseHandle(p r0)'
+        ${If} $1 != 0
+          Abort
+        ${EndIf}
+      ${EndIf}
     ${EndIf}
     !insertmacro UnselectSection ${Desktop}
   ${EndIf}
   !insertmacro LockSetup
   ${If} $UpdatePid != ""
+    ${If} $UpdateReady != ""
+      Call SignalReadyAndWaitForParent
+    ${EndIf}
+    StrCpy $CanRelaunch 1
     Return
   ${EndIf}
   ${If} $PreviousDir != ""
@@ -226,7 +280,7 @@ Function .onInstSuccess
 FunctionEnd
 
 Function .onInstFailed
-  ${If} $UpdatePid != ""
+  ${If} $CanRelaunch == 1
   ${AndIf} $RestoreFailed != 1
     Exec '"$INSTDIR\Corrector.exe" --update-failed'
   ${EndIf}
